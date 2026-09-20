@@ -1,0 +1,52 @@
+{
+  "name": "@zephytiju/prism-file-viewer",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Platform Prism file-viewer micro-UI (component id \"file-viewer\"): the merged VAULT main-viewport surface (decision D9) — hub header (wordmark + inventory subtitle, layout-toggle patterns, workspace search, SORT, + NEW FILE), viewer toolbar (breadcrumb path at the top left with ancestor back-navigation, current title/description, selection-tag filter pills) and the FILES gallery (uniform tiles for folders and individual files, folders first, distinct per-kind icons, grid default and list via the Layout Toggle). Browses IFileEntry records through embedded generated clients over useLatticeTransport (per-folder children queries, ISearchable search), publishes the vault.viewerPath shared slot, and emits open-file / create-file intents. Ships en + zh-CN locale bundles.",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./locales/*": "./locales/*"
+  },
+  "publishConfig": { "access": "public" },
+  "files": ["dist", "locales"],
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-locales.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "shot-demo": "node scripts/shot-demo.mjs"
+  },
+  "peerDependencies": {
+    "@mantine/core": "^8.1.1",
+    "@zephytiju/lattice-common-interfaces": ">=0.1.0",
+    "@zephytiju/prism-react": ">=0.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@mantine/core": "8.1.1",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@zephytiju/lattice-common-interfaces": "0.1.0",
+    "@zephytiju/prism-react": "0.1.1",
+    "jsdom": "^25.0.1",
+    "puppeteer-core": "^24.10.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "typescript": "^5.7.2",
+    "vite": "6.0.5",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
