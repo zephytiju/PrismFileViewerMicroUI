@@ -125,12 +125,17 @@ palette — the component is skinned purely through the surrounding `MantineProv
 
 `src/` is strictly two parts:
 
-- Component source (what the package compiles): `FileViewer.tsx` (the merged hub header + viewer
-  toolbar + FILES gallery), `FileTile.tsx` (the gallery tile/row member), `LayoutToggle.tsx` and
-  `SelectionTags.tsx` (the hosted sub-component libraries, D5), `ViewerBreadcrumb.tsx` (the
-  breadcrumb path), `icons.tsx` (the distinct per-kind icons), `kinds.ts` (kind registry),
-  `index.ts` (public entry), and `src/locales/` (`en.json`, `zh-CN.json`, `index.ts` — the i18n
-  string bundles, their resolver, and the `{count}` interpolation helper).
+- Component source (what the package compiles): `FileViewer.tsx` (the stateful composition —
+  navigation path, local view state, Lattice bindings, public types), which renders the focused
+  presentation modules `HubHeader.tsx` (wordmark, Layout Toggle patterns, workspace search,
+  SORT, + NEW FILE), `ViewerToolbar.tsx` (breadcrumb path, title/description, Selection Tags
+  filter pills), and `FilesGallery.tsx` (section row + the grid/list FILES gallery with its load
+  phases), all styled through the shared semantic tokens and defaults in `viewerTokens.ts`;
+  `FileTile.tsx` (the gallery tile/row member), `LayoutToggle.tsx` and `SelectionTags.tsx` (the
+  hosted sub-component libraries, D5), `ViewerBreadcrumb.tsx` (the breadcrumb path),
+  `icons.tsx` (the distinct per-kind icons), `kinds.ts` (kind registry), `index.ts` (public
+  entry), and `src/locales/` (`en.json`, `zh-CN.json`, `index.ts` — the i18n string bundles,
+  their resolver, and the `{count}` interpolation helper).
 - Demo: exactly ONE file, `src/demo.tsx` — the two host themes (GeoVision VAULT dark + Lattice
   Light), the mock host executor serving the synthetic v9 vault tree through the embedded
   clients' routes (`IFileEntry.list` children queries, `ISearchable.search`), all demo

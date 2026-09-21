@@ -1,23 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { Alert, Box, Button, Group, Skeleton, Stack, Text, TextInput, UnstyledButton } from "@mantine/core";
+import { Stack } from "@mantine/core";
 import {
   createFileEntryClient,
   createSearchableClient,
 } from "@zephytiju/lattice-common-interfaces";
 import type { FileEntrySummary } from "@zephytiju/lattice-common-interfaces";
 import { emitPrismEvent, useLatticeTransport, usePrismStateSetter } from "@zephytiju/prism-react";
-import { FileTile, defaultMetaFor } from "./FileTile.js";
-import { LayoutToggle } from "./LayoutToggle.js";
+import { defaultMetaFor } from "./FileTile.js";
+import { FilesGallery } from "./FilesGallery.js";
+import type { GalleryPhase } from "./FilesGallery.js";
+import { HubHeader } from "./HubHeader.js";
 import type { ViewerLayout } from "./LayoutToggle.js";
-import { SelectionTags } from "./SelectionTags.js";
 import type { SelectionTag } from "./SelectionTags.js";
-import { ViewerBreadcrumb } from "./ViewerBreadcrumb.js";
+import { ViewerToolbar } from "./ViewerToolbar.js";
 import type { ViewerPathSegment } from "./ViewerBreadcrumb.js";
-import { SearchIcon } from "./icons.js";
 import { kindChipLabel } from "./kinds.js";
 import { formatMessage, stringsForLocale } from "./locales/index.js";
 import type { FileViewerLocale } from "./locales/index.js";
+import { DEFAULT_PAGE_SIZE, DEFAULT_SORT_KEYS, DEEP } from "./viewerTokens.js";
 
 /**
  * Payload published on the bounded-context shared slot `vault.viewerPath` —
@@ -89,19 +90,6 @@ export interface FileViewerProps {
   readonly galleryMaxHeight?: number | string;
 }
 
-const MONO = "var(--mantine-font-family-monospace)";
-const TEXT = "var(--mantine-color-text-filled)";
-const MUTED = "var(--mantine-color-muted-filled)";
-const DEEP = "var(--mantine-color-deep-filled)";
-const CARD_DARK = "var(--mantine-color-card-dark-filled)";
-const CARD_BG = "var(--mantine-color-card-filled)";
-const BORDER = "var(--mantine-color-border-filled)";
-const LINE = "var(--mantine-color-line-filled)";
-const ACCENT = "var(--mantine-color-accent-filled)";
-
-const DEFAULT_SORT_KEYS: readonly ViewerSortKey[] = [{ id: "name" }, { id: "size" }];
-const DEFAULT_PAGE_SIZE = 50;
-
 /**
  * Platform Prism file-viewer micro-UI (component id "file-viewer") — the
  * merged VAULT main-viewport surface (decision D9): hub header (wordmark +
@@ -112,6 +100,12 @@ const DEFAULT_PAGE_SIZE = 50;
  * gallery: one gallery-style explorer area rendering both folders and
  * individual files as uniform tiles, folders first, every file kind
  * carrying its distinct icon.
+ *
+ * This module is the stateful composition: it owns the navigation path, the
+ * local view state (sort / layout / filter), and the Lattice bindings, and
+ * renders the presentation modules HubHeader (the header bar), ViewerToolbar
+ * (breadcrumb + title/description + filter pills), and FilesGallery (section
+ * row + the tile/rows explorer area) — see those files for their pieces.
  *
  * Lattice bindings (embedded, per the Micro-UI standards): gallery items
  * render IFileEntry records fetched through the generated FileEntryClient
@@ -154,7 +148,7 @@ export function FileViewer({
   const [query, setQuery] = useState<string>("");
   const [search, setSearch] = useState<{ readonly query: string } | null>(null);
   const [entries, setEntries] = useState<readonly FileEntrySummary[] | null>(null);
-  const [phase, setPhase] = useState<"busy" | "ok" | "error">("busy");
+  const [phase, setPhase] = useState<GalleryPhase>("busy");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [reloadToken, setReloadToken] = useState<number>(0);
 
@@ -322,6 +316,22 @@ export function FileViewer({
     setSearch(null);
   }, []);
 
+  // + NEW FILE emits the creation intent for the current scope.
+  const createFile = useCallback((): void => {
+    emitPrismEvent("file-viewer.create-file", {
+      scopeId: currentFolder !== null ? currentFolder.id : null,
+      ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
+    } satisfies CreateFileIntent);
+  }, [currentFolder]);
+
+  const cycleSort = (): void => {
+    setSortIndex((index) => index + 1);
+  };
+
+  const retry = (): void => {
+    setReloadToken((token) => token + 1);
+  };
+
   const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const trimmed = query.trim();
@@ -335,248 +345,53 @@ export function FileViewer({
     setQuery("");
   };
 
-  const galleryBody = (): React.JSX.Element => {
-    if (phase === "error") {
-      return (
-        <Alert variant="light" color="threat" title={strings.errorTitle} data-testid="file-viewer-error">
-          <Stack gap="sm">
-            <Text size="sm" data-testid="file-viewer-error-message">
-              {errorMessage}
-            </Text>
-            <Group>
-              <Button
-                variant="default"
-                data-testid="file-viewer-retry"
-                onClick={() => {
-                  setReloadToken((token) => token + 1);
-                }}
-              >
-                {strings.retry}
-              </Button>
-            </Group>
-          </Stack>
-        </Alert>
-      );
-    }
-    if (phase === "busy") {
-      return (
-        <div
-          style={
-            layout === "grid"
-              ? { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 12 }
-              : { display: "flex", flexDirection: "column", gap: 8 }
-          }
-          data-testid="file-viewer-loading"
-          aria-busy="true"
-        >
-          {[0, 1, 2, 3].map((row) => (
-            <Skeleton key={row} height={layout === "grid" ? 156 : 62} radius="md" />
-          ))}
-        </div>
-      );
-    }
-    if (visible.length === 0) {
-      return (
-        <Text ff={MONO} fz={9} style={{ color: MUTED, letterSpacing: "0.02em" }} data-testid="file-viewer-empty">
-          {search !== null ? strings.emptySearch : strings.emptyFiltered}
-        </Text>
-      );
-    }
-    return layout === "grid" ? (
-      <div
-        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 12 }}
-        role="list"
-      >
-        {visible.map((entry) => (
-          <FileTile
-            key={entry.id}
-            model={{ entry, meta: metaFor(entry), chip: chipFor(entry) }}
-            variant="tile"
-            strings={strings}
-            onOpen={openEntry}
-          />
-        ))}
-      </div>
-    ) : (
-      <Stack gap={8} role="list">
-        {visible.map((entry) => (
-          <FileTile
-            key={entry.id}
-            model={{ entry, meta: metaFor(entry), chip: chipFor(entry) }}
-            variant="row"
-            strings={strings}
-            onOpen={openEntry}
-          />
-        ))}
-      </Stack>
-    );
-  };
-
   return (
     <Stack gap={0} w="100%" miw={0} style={{ background: DEEP }} data-testid="file-viewer">
       {/* Hub header: wordmark + inventory subtitle, Layout Toggle patterns
           immediately right of the title, then search / SORT / + NEW FILE. */}
-      <Group
-        gap={12}
-        wrap="nowrap"
-        align="center"
-        px={20}
-        h={72}
-        style={{ background: CARD_DARK, borderBottom: `1px solid ${LINE}` }}
-        data-testid="file-viewer-hub-header"
-      >
-        <Stack gap={3} miw={0} style={{ flex: "0 1 auto" }}>
-          <Text fz={15} fw={600} truncate="end" style={{ color: TEXT }} data-testid="file-viewer-title">
-            {title ?? strings.title}
-          </Text>
-          <Text
-            ff={MONO}
-            fz={9}
-            truncate="end"
-            style={{ color: MUTED, letterSpacing: "0.02em" }}
-            data-testid="file-viewer-subtitle"
-          >
-            {inventorySubtitle ?? strings.inventorySubtitle}
-          </Text>
-        </Stack>
-        <LayoutToggle
-          layout={layout}
-          onLayoutChange={setLayout}
-          gridLabel={strings.layoutGrid}
-          listLabel={strings.layoutList}
-        />
-        <Box style={{ flex: 1 }} />
-        <form onSubmit={submitSearch} data-testid="file-viewer-search-form">
-          <TextInput
-            w={260}
-            aria-label={strings.searchPlaceholder}
-            placeholder={strings.searchPlaceholder}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.currentTarget.value);
-            }}
-            leftSection={<span style={{ color: ACCENT, display: "inline-flex" }}><SearchIcon size={13} /></span>}
-            data-testid="file-viewer-search-input"
-            styles={{
-              input: {
-                height: 42,
-                borderRadius: 5,
-                background: DEEP,
-                borderColor: ACCENT,
-                fontFamily: MONO,
-                fontSize: 10,
-                color: TEXT,
-              },
-            }}
-          />
-        </form>
-        <UnstyledButton
-          type="button"
-          title={strings.sort}
-          data-testid="file-viewer-sort"
-          onClick={() => {
-            setSortIndex((index) => index + 1);
-          }}
-          style={{
-            height: 42,
-            padding: "0 14px",
-            borderRadius: 5,
-            background: CARD_BG,
-            border: `1px solid ${BORDER}`,
-            fontFamily: MONO,
-            fontSize: 9,
-            fontWeight: 500,
-            color: TEXT,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {`${strings.sort} · ${activeSortLabel} ↓`}
-        </UnstyledButton>
-        <UnstyledButton
-          type="button"
-          data-testid="file-viewer-new-file"
-          onClick={() => {
-            emitPrismEvent("file-viewer.create-file", {
-              scopeId: currentFolder !== null ? currentFolder.id : null,
-              ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
-            } satisfies CreateFileIntent);
-          }}
-          style={{
-            height: 42,
-            padding: "0 16px",
-            borderRadius: 5,
-            background: ACCENT,
-            fontFamily: MONO,
-            fontSize: 9,
-            fontWeight: 500,
-            color: DEEP,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {strings.newFile}
-        </UnstyledButton>
-      </Group>
+      <HubHeader
+        strings={strings}
+        title={title}
+        inventorySubtitle={inventorySubtitle}
+        layout={layout}
+        onLayoutChange={setLayout}
+        query={query}
+        onQueryChange={setQuery}
+        onSubmitSearch={submitSearch}
+        activeSortLabel={activeSortLabel}
+        onSortCycle={cycleSort}
+        onCreateFile={createFile}
+      />
 
       {/* Viewer toolbar: breadcrumb path (top left, back-navigation), current
           title + description, Selection Tags filter pills; FILES gallery. */}
       <Stack gap={0} px={24} pt={20} pb={24} miw={0}>
-        <ViewerBreadcrumb
+        <ViewerToolbar
+          strings={strings}
           segments={path.map((entry) => ({ id: entry.id, name: entry.name }))}
-          homeLabel={strings.crumbHome}
-          areaLabel={strings.crumbArea}
-          rootLabel={strings.crumbRoot}
+          title={toolbarTitle}
+          description={toolbarDescription}
+          tags={resolvedTags}
+          filter={filter}
+          onFilterChange={setFilter}
           onNavigate={navigate}
         />
-        <Text
-          fz={24}
-          fw={600}
-          mt={12}
-          style={{ color: TEXT, letterSpacing: "0.01em" }}
-          data-testid="file-viewer-path-title"
-        >
-          {toolbarTitle}
-        </Text>
-        <Text fz={11} mt={6} style={{ color: MUTED }} data-testid="file-viewer-path-description">
-          {toolbarDescription}
-        </Text>
-        <Box mt={16}>
-          <SelectionTags tags={resolvedTags} active={filter} onChange={setFilter} />
-        </Box>
-        <Group justify="space-between" align="center" wrap="nowrap" mt={24}>
-          <Text fz={11} fw={600} style={{ color: TEXT, letterSpacing: "0.02em" }} data-testid="file-viewer-section-label">
-            {sectionLabel}
-          </Text>
-          <Group gap={12} wrap="nowrap" align="center">
-            {search !== null ? (
-              <UnstyledButton
-                type="button"
-                ff={MONO}
-                fz={9}
-                fw={500}
-                c="accent"
-                style={{ letterSpacing: "0.02em" }}
-                data-testid="file-viewer-clear-search"
-                onClick={clearSearch}
-              >
-                {strings.clearSearch}
-              </UnstyledButton>
-            ) : null}
-            <Text ff={MONO} fz={9} style={{ color: MUTED, letterSpacing: "0.02em" }} data-testid="file-viewer-count">
-              {countLine}
-            </Text>
-          </Group>
-        </Group>
-        <Box
-          mt={10}
-          style={{ overflowY: "auto", maxHeight: galleryMaxHeight }}
-          data-testid="file-viewer-gallery"
-        >
-          {galleryBody()}
-        </Box>
+        <FilesGallery
+          strings={strings}
+          layout={layout}
+          phase={phase}
+          errorMessage={errorMessage}
+          searchActive={search !== null}
+          sectionLabel={sectionLabel}
+          countLine={countLine}
+          onClearSearch={clearSearch}
+          entries={visible}
+          metaFor={metaFor}
+          chipFor={chipFor}
+          onOpen={openEntry}
+          onRetry={retry}
+          maxHeight={galleryMaxHeight}
+        />
       </Stack>
     </Stack>
   );
