@@ -11,6 +11,7 @@ import type { FileEntrySummary } from "@zephytiju/lattice-common-interfaces";
 import { FileViewer } from "../src/index.js";
 import type {
   CreateFileIntent,
+  CreateFolderIntent,
   FileViewerProps,
   OpenFileIntent,
   ViewerPath,
@@ -22,8 +23,10 @@ import type { FileViewerStrings } from "../src/index.js";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 // ---------------------------------------------------------------------------
-// Test fixture — a small synthetic vault tree served by a mock Lattice
-// executor, mirroring how a host runtime would answer the embedded clients.
+// Test fixture — a small synthetic vault tree with MIXED ownership (some
+// entries owned by the operator, some shared with them) served by a mock
+// Lattice executor, mirroring how a host runtime would answer the embedded
+// clients.
 // ---------------------------------------------------------------------------
 
 interface Node {
@@ -49,6 +52,7 @@ const FIXTURE: readonly Node[] = [
   },
   { id: "fld-shared", name: "SHARED SET", kind: "folder", shared: true, children: [{ id: "doc-shared", name: "Shared Brief", kind: "dossier", shared: true, sizeBytes: 2048 }] },
   { id: "doc-root", name: "Root Brief", kind: "dossier", sizeBytes: 5120 },
+  { id: "doc-partner", name: "Partner Brief", kind: "dossier", shared: true, sizeBytes: 1024 },
   { id: "brd-root", name: "Root Board", kind: "board", sizeBytes: 1024 },
   { id: "wld-root", name: "Root View", kind: "world", sizeBytes: 10240 },
   { id: "dat-root", name: "Root Foreign Kind", kind: "transcript", sizeBytes: 256 },
@@ -112,9 +116,9 @@ const entry = (id: string): FileEntrySummary => {
   return { id: node.id, name: node.name, kind: node.kind, sizeBytes: node.sizeBytes ?? 0 };
 };
 
-const sharedIds = new Set(["fld-shared", "doc-shared"]);
+const sharedIds = new Set(["fld-shared", "doc-shared", "doc-partner"]);
 const baseProps: FileViewerProps = {
-  shared: (e) => sharedIds.has(e.id),
+  ownershipOf: (e) => (sharedIds.has(e.id) ? "shared" : "owned"),
 };
 
 beforeEach(() => {
@@ -150,7 +154,7 @@ const rowIds = (): string[] =>
   );
 
 describe("FileViewer hub header and toolbar", () => {
-  it("renders the hub header: title, inventory subtitle, layout toggle, search, SORT, + NEW FILE", async () => {
+  it("renders the hub header: title, inventory subtitle, layout toggle, search, SORT, + NEW control", async () => {
     await renderViewer();
     expect(screen.getByTestId("file-viewer-title").textContent).toBe("VAULT");
     expect(screen.getByTestId("file-viewer-subtitle").textContent).toBe("ALL OPERATIONAL FILES");
@@ -158,7 +162,21 @@ describe("FileViewer hub header and toolbar", () => {
     expect(screen.getByTestId("file-viewer-search-input")).toBeDefined();
     expect(screen.getByTestId("file-viewer-sort").textContent).toContain("SORT");
     expect(screen.getByTestId("file-viewer-sort").textContent).toContain("NAME");
-    expect(screen.getByTestId("file-viewer-new-file").textContent).toBe("+ NEW FILE");
+    expect(screen.getByTestId("file-viewer-new").textContent).toBe("+ NEW ▾");
+    // The create menu itself is closed until the control is toggled.
+    expect(screen.queryByTestId("file-viewer-new-menu")).toBeNull();
+  });
+
+  it("renders the three ownership filter pills (ALL / OWNED BY ME / SHARED WITH ME) with ALL active", async () => {
+    await renderViewer();
+    expect(screen.getByTestId("file-viewer-filter-all").textContent).toBe("ALL");
+    expect(screen.getByTestId("file-viewer-filter-owned").textContent).toBe("OWNED BY ME");
+    expect(screen.getByTestId("file-viewer-filter-shared").textContent).toBe("SHARED WITH ME");
+    expect(screen.getByTestId("file-viewer-filter-all").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByTestId("file-viewer-filter-folders")).toBeNull();
+    expect(screen.queryByTestId("file-viewer-filter-dossiers")).toBeNull();
+    expect(screen.queryByTestId("file-viewer-filter-boards")).toBeNull();
+    expect(screen.queryByTestId("file-viewer-filter-world")).toBeNull();
   });
 
   it("renders the root breadcrumb (NEXUS / VAULT / ALL FILES) with the root title and description", async () => {
@@ -189,7 +207,63 @@ describe("FileViewer hub header and toolbar", () => {
   it("renders the FILES section with the visible count and folders + files suffix at the root", async () => {
     await renderViewer();
     expect(screen.getByTestId("file-viewer-section-label").textContent).toBe("FILES");
-    expect(screen.getByTestId("file-viewer-count").textContent).toBe("6 VISIBLE · FOLDERS + FILES");
+    expect(screen.getByTestId("file-viewer-count").textContent).toBe("7 VISIBLE · FOLDERS + FILES");
+  });
+});
+
+describe("FileViewer ownership filters (D11)", () => {
+  it("SHARED WITH ME scopes the gallery to entries shared with the operator", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
+    expect(screen.getByTestId("file-viewer-filter-shared").getAttribute("aria-pressed")).toBe("true");
+    // Folders first: SHARED SET folder, then the shared root file.
+    expect(tileIds()).toEqual(["fld-shared", "doc-partner"]);
+  });
+
+  it("OWNED BY ME scopes the gallery to entries owned by the operator", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-filter-owned"));
+    expect(tileIds()).toEqual(["fld-alpha", "brd-root", "doc-root", "dat-root", "wld-root"]);
+  });
+
+  it("ALL restores the unscoped current-path listing", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
+    fireEvent.click(screen.getByTestId("file-viewer-filter-all"));
+    expect(tileIds().length).toBe(7);
+  });
+
+  it("treats entries as owned when no ownershipOf callback is configured", async () => {
+    await renderViewer({});
+    fireEvent.click(screen.getByTestId("file-viewer-filter-owned"));
+    expect(tileIds().length).toBe(7);
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
+    expect(screen.getByTestId("file-viewer-empty").textContent).toBe(
+      "NO ENTRIES MATCH THE CURRENT FILTER",
+    );
+  });
+
+  it("ownership pills scope the entries inside the current folder, not just at the root", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
+    });
+    // Everything inside ALPHA SET is owned: OWNED BY ME keeps 4, SHARED WITH ME is empty.
+    fireEvent.click(screen.getByTestId("file-viewer-filter-owned"));
+    expect(tileIds()).toEqual(["fld-alpha-sub", "brd-inside", "doc-inside", "wld-inside"]);
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
+    expect(screen.getByTestId("file-viewer-empty").textContent).toBe(
+      "NO ENTRIES MATCH THE CURRENT FILTER",
+    );
+  });
+
+  it("accepts a custom tag set through the tags configuration key", async () => {
+    await renderViewer({ ...baseProps, tags: [{ id: "everything", label: "EVERYTHING" }] });
+    expect(screen.getByTestId("file-viewer-filter-everything").textContent).toBe("EVERYTHING");
+    expect(screen.queryByTestId("file-viewer-filter-all")).toBeNull();
+    // Custom ids carry no builtin scoping: the full current path renders.
+    expect(tileIds().length).toBe(7);
   });
 });
 
@@ -199,6 +273,7 @@ describe("FileViewer FILES gallery", () => {
     expect(tileIds()).toEqual([
       "fld-alpha",
       "fld-shared",
+      "doc-partner",
       "brd-root",
       "doc-root",
       "dat-root",
@@ -246,51 +321,21 @@ describe("FileViewer FILES gallery", () => {
 
   it("switches grid tiles to list rows through the Layout Toggle", async () => {
     await renderViewer();
-    expect(tileIds().length).toBe(6);
+    expect(tileIds().length).toBe(7);
     expect(rowIds()).toEqual([]);
     fireEvent.click(screen.getByTestId("file-viewer-layout-list"));
-    expect(rowIds()).toEqual(["fld-alpha", "fld-shared", "brd-root", "doc-root", "dat-root", "wld-root"]);
+    expect(rowIds()).toEqual([
+      "fld-alpha",
+      "fld-shared",
+      "doc-partner",
+      "brd-root",
+      "doc-root",
+      "dat-root",
+      "wld-root",
+    ]);
     expect(tileIds()).toEqual([]);
     fireEvent.click(screen.getByTestId("file-viewer-layout-grid"));
-    expect(tileIds().length).toBe(6);
-  });
-
-  it("scopes rendered entries through the Selection Tags filter pills", async () => {
-    await renderViewer();
-    fireEvent.click(screen.getByTestId("file-viewer-filter-folders"));
-    expect(tileIds()).toEqual(["fld-alpha", "fld-shared"]);
-
-    fireEvent.click(screen.getByTestId("file-viewer-filter-dossiers"));
-    expect(tileIds()).toEqual(["doc-root", "dat-root"].filter((id) => id !== "dat-root"));
-
-    fireEvent.click(screen.getByTestId("file-viewer-filter-boards"));
-    expect(tileIds()).toEqual(["brd-root"]);
-
-    fireEvent.click(screen.getByTestId("file-viewer-filter-world"));
-    expect(tileIds()).toEqual(["wld-root"]);
-
-    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
-    expect(tileIds()).toEqual(["fld-shared"]);
-
-    fireEvent.click(screen.getByTestId("file-viewer-filter-all"));
-    expect(tileIds().length).toBe(6);
-  });
-
-  it("shows the empty-filter state when no entry matches the active pill", async () => {
-    await renderViewer();
-    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
-    fireEvent.click(screen.getByTestId("file-viewer-layout-list"));
-    // SHARED set at root contains only the folder; drill in and filter files-only.
-    fireEvent.click(screen.getByTestId("file-viewer-row-fld-shared"));
-    await waitFor(() => {
-      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("SHARED SET");
-    });
-    fireEvent.click(screen.getByTestId("file-viewer-filter-world"));
-    await waitFor(() => {
-      expect(screen.getByTestId("file-viewer-empty").textContent).toBe(
-        "NO ENTRIES MATCH THE CURRENT FILTER",
-      );
-    });
+    expect(tileIds().length).toBe(7);
   });
 
   it("cycles the local sort key through the offered keys (name → size)", async () => {
@@ -299,8 +344,9 @@ describe("FileViewer FILES gallery", () => {
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-sort").textContent).toContain("SIZE");
     });
-    // Files ordered by descending size: wld-root (10240), doc-root (5120), brd-root (1024), dat-root (256).
-    expect(tileIds()).toEqual(["fld-alpha", "fld-shared", "wld-root", "doc-root", "brd-root", "dat-root"]);
+    // Files ordered by descending size: wld-root (10240), doc-root (5120),
+    // brd-root (1024), doc-partner (1024), dat-root (256); name breaks the tie.
+    expect(tileIds()).toEqual(["fld-alpha", "fld-shared", "wld-root", "doc-root", "doc-partner", "brd-root", "dat-root"]);
     fireEvent.click(screen.getByTestId("file-viewer-sort"));
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-sort").textContent).toContain("NAME");
@@ -308,29 +354,35 @@ describe("FileViewer FILES gallery", () => {
   });
 });
 
-describe("FileViewer folder navigation", () => {
-  it("entering a folder re-queries its children, extends the breadcrumb, and switches title/description", async () => {
+describe("FileViewer folder navigation (explorer semantics, D11)", () => {
+  it("entering a folder re-queries its children, extends the breadcrumb beyond the persistent root segment, and switches title/description", async () => {
     await renderViewer();
     fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
     });
+    // The root segment ALL FILES persists as a clickable ancestor — the
+    // breadcrumb always reflects the FULL current path (D11).
+    expect(screen.getByTestId("file-viewer-crumb-root").textContent).toBe("ALL FILES");
+    expect(screen.getByTestId("file-viewer-crumb-home").textContent).toBe("NEXUS");
+    expect(screen.getByTestId("file-viewer-crumb-area").textContent).toBe("VAULT");
     expect(seenScopes).toEqual([undefined, "fld-alpha"]);
     expect(screen.getByTestId("file-viewer-path-title").textContent).toBe("ALPHA SET");
     expect(screen.getByTestId("file-viewer-path-description").textContent).toBe("FOLDER · FOLDER");
     expect(screen.getByTestId("file-viewer-count").textContent).toContain("4 VISIBLE");
     expect(tileIds()).toEqual(["fld-alpha-sub", "brd-inside", "doc-inside", "wld-inside"]);
 
-    // Drill one level deeper: breadcrumb extends again.
+    // Drill one level deeper: the breadcrumb extends again, one segment per folder.
     fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha-sub"));
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SUBSET");
     });
     expect(screen.getByTestId("file-viewer-crumb-0").textContent).toBe("ALPHA SET");
+    expect(screen.getByTestId("file-viewer-crumb-root").textContent).toBe("ALL FILES");
     expect(seenScopes).toEqual([undefined, "fld-alpha", "fld-alpha-sub"]);
   });
 
-  it("navigates back through any ancestor breadcrumb segment", async () => {
+  it("navigates back through every ancestor segment: folder, root scope, area, home", async () => {
     await renderViewer();
     fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
     await waitFor(() => {
@@ -348,14 +400,24 @@ describe("FileViewer folder navigation", () => {
     });
     expect(screen.getByTestId("file-viewer-path-title").textContent).toBe("ALPHA SET");
 
-    // VAULT area segment: back to the root.
+    // Persistent root segment (ALL FILES): back to the root.
+    fireEvent.click(screen.getByTestId("file-viewer-crumb-root"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALL FILES");
+    });
+    expect(screen.queryByTestId("file-viewer-crumb-root")).toBeNull();
+    expect(screen.getByTestId("file-viewer-path-title").textContent).toBe("Operational files");
+    expect(tileIds().length).toBe(7);
+
+    // VAULT area and NEXUS home segments: also the root.
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
+    });
     fireEvent.click(screen.getByTestId("file-viewer-crumb-area"));
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALL FILES");
     });
-    expect(screen.getByTestId("file-viewer-path-title").textContent).toBe("Operational files");
-
-    // NEXUS home segment: also the root.
     fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
     await waitFor(() => {
       expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
@@ -366,16 +428,16 @@ describe("FileViewer folder navigation", () => {
     });
   });
 
-  it("resets the filter to ALL when entering a folder (prototype behavior)", async () => {
+  it("resets the ownership filter to ALL when entering a folder (prototype behavior)", async () => {
     await renderViewer();
-    fireEvent.click(screen.getByTestId("file-viewer-filter-folders"));
-    expect(tileIds()).toEqual(["fld-alpha", "fld-shared"]);
-    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
+    expect(tileIds()).toEqual(["fld-shared", "doc-partner"]);
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-shared"));
     await waitFor(() => {
-      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("SHARED SET");
     });
     expect(screen.getByTestId("file-viewer-filter-all").getAttribute("aria-pressed")).toBe("true");
-    expect(tileIds().length).toBe(4);
+    expect(tileIds()).toEqual(["doc-shared"]);
   });
 
   it("lists a folder scope through rootScope when provided", async () => {
@@ -384,6 +446,91 @@ describe("FileViewer folder navigation", () => {
       expect(tileIds()).toEqual(["fld-alpha-sub", "brd-inside", "doc-inside", "wld-inside"]);
     });
     expect(seenScopes).toEqual(["fld-alpha"]);
+  });
+});
+
+describe("FileViewer + NEW create menu (D11)", () => {
+  it("opens the create menu with NEW FOLDER / NEW FILE (DOSSIER) and closes on outside click", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    expect(screen.getByTestId("file-viewer-new").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("file-viewer-new-folder").textContent).toBe("NEW FOLDER");
+    expect(screen.getByTestId("file-viewer-new-file").textContent).toBe("NEW FILE (DOSSIER)");
+    // Clicking anywhere outside closes the menu without emitting anything.
+    const payloads: string[] = [];
+    const unsubscribe = subscribeToEvent("file-viewer.create-folder", () => {
+      payloads.push("create-folder");
+    });
+    fireEvent.click(document.body);
+    expect(screen.queryByTestId("file-viewer-new-menu")).toBeNull();
+    expect(payloads).toEqual([]);
+    unsubscribe();
+  });
+
+  it("closes the create menu on Escape", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    expect(screen.getByTestId("file-viewer-new-menu")).toBeDefined();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByTestId("file-viewer-new-menu")).toBeNull();
+  });
+
+  it("emits file-viewer.create-folder with the current path as parent, at the root and inside a folder", async () => {
+    const payloads: CreateFolderIntent[] = [];
+    const unsubscribe = subscribeToEvent("file-viewer.create-folder", (payload) => {
+      payloads.push(payload as CreateFolderIntent);
+    });
+    await renderViewer();
+
+    // At the root: the intent carries scopeId null.
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    fireEvent.click(screen.getByTestId("file-viewer-new-folder"));
+    expect(payloads).toEqual([{ scopeId: null, ontologyInterfaces: ["IFileEntry"] }]);
+    expect(screen.queryByTestId("file-viewer-new-menu")).toBeNull();
+
+    // Inside a folder: the intent carries the current folder as parent.
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
+    });
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    fireEvent.click(screen.getByTestId("file-viewer-new-folder"));
+    expect(payloads[1]).toEqual({ scopeId: "fld-alpha", ontologyInterfaces: ["IFileEntry"] });
+    unsubscribe();
+  });
+
+  it("emits file-viewer.create-file with the current path as parent (NEW FILE, dossier)", async () => {
+    const payloads: CreateFileIntent[] = [];
+    const unsubscribe = subscribeToEvent("file-viewer.create-file", (payload) => {
+      payloads.push(payload as CreateFileIntent);
+    });
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    fireEvent.click(screen.getByTestId("file-viewer-new-file"));
+    expect(payloads).toEqual([
+      { scopeId: null, ontologyInterfaces: ["IDossierDoc", "IFileEntry"] },
+    ]);
+
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
+    });
+    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha-sub"));
+    await waitFor(() => {
+      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SUBSET");
+    });
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    fireEvent.click(screen.getByTestId("file-viewer-new-file"));
+    expect(payloads[1]).toEqual({ scopeId: "fld-alpha-sub", ontologyInterfaces: ["IDossierDoc", "IFileEntry"] });
+    unsubscribe();
+  });
+
+  it("toggles the create menu closed when the control is clicked again", async () => {
+    await renderViewer();
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    expect(screen.getByTestId("file-viewer-new-menu")).toBeDefined();
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    expect(screen.queryByTestId("file-viewer-new-menu")).toBeNull();
   });
 });
 
@@ -413,7 +560,7 @@ describe("FileViewer channel contract", () => {
       });
     });
 
-    fireEvent.click(screen.getByTestId("file-viewer-crumb-area"));
+    fireEvent.click(screen.getByTestId("file-viewer-crumb-root"));
     await waitFor(() => {
       expect(readChannel<ViewerPath>("vault.viewerPath")).toEqual({ scopeId: null, segments: [] });
     });
@@ -453,26 +600,6 @@ describe("FileViewer channel contract", () => {
     });
     unsubscribe();
   });
-
-  it("emits file-viewer.create-file with the creation intent (+ NEW FILE)", async () => {
-    const payloads: CreateFileIntent[] = [];
-    const unsubscribe = subscribeToEvent("file-viewer.create-file", (payload) => {
-      payloads.push(payload as CreateFileIntent);
-    });
-    await renderViewer();
-    fireEvent.click(screen.getByTestId("file-viewer-new-file"));
-    expect(payloads).toEqual([
-      { scopeId: null, ontologyInterfaces: ["IDossierDoc", "IFileEntry"] },
-    ]);
-
-    fireEvent.click(screen.getByTestId("file-viewer-tile-fld-alpha"));
-    await waitFor(() => {
-      expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("ALPHA SET");
-    });
-    fireEvent.click(screen.getByTestId("file-viewer-new-file"));
-    expect(payloads[1]).toEqual({ scopeId: "fld-alpha", ontologyInterfaces: ["IDossierDoc", "IFileEntry"] });
-    unsubscribe();
-  });
 });
 
 describe("FileViewer search (ISearchable)", () => {
@@ -509,7 +636,7 @@ describe("FileViewer search (ISearchable)", () => {
       expect(screen.getByTestId("file-viewer-section-label").textContent).toBe("FILES");
     });
     expect(screen.getByTestId("file-viewer-count").textContent).toContain("FOLDERS + FILES");
-    expect(tileIds().length).toBe(6);
+    expect(tileIds().length).toBe(7);
   });
 
   it("navigating into a folder from search results clears the search", async () => {
@@ -574,19 +701,25 @@ describe("FileViewer i18n", () => {
     expect(screen.getByTestId("file-viewer-crumb-current").textContent).toBe("全部文件");
     expect(screen.getByTestId("file-viewer-path-title").textContent).toBe("作战文件");
     expect(screen.getByTestId("file-viewer-section-label").textContent).toBe("文件");
-    expect(screen.getByTestId("file-viewer-count").textContent).toBe("6 项可见 · 文件夹 + 文件");
-    expect(screen.getByTestId("file-viewer-new-file").textContent).toBe("+ 新建文件");
-    expect(screen.getByTestId("file-viewer-filter-folders").textContent).toBe("文件夹");
+    expect(screen.getByTestId("file-viewer-count").textContent).toBe("7 项可见 · 文件夹 + 文件");
+    expect(screen.getByTestId("file-viewer-new").textContent).toBe("+ 新建 ▾");
+    expect(screen.getByTestId("file-viewer-filter-owned").textContent).toBe("我拥有的");
+    expect(screen.getByTestId("file-viewer-filter-shared").textContent).toBe("与我共享的");
     expect(screen.getByTestId("file-viewer-chip-doc-root").textContent).toBe("卷宗");
     expect(screen.getByTestId("file-viewer-tile-fld-alpha").getAttribute("title")).toBe("打开文件夹");
     expect(screen.getByTestId("file-viewer-tile-doc-root").getAttribute("title")).toBe("打开文件");
+
+    // The create menu items localize too.
+    fireEvent.click(screen.getByTestId("file-viewer-new"));
+    expect(screen.getByTestId("file-viewer-new-folder").textContent).toBe("新建文件夹");
+    expect(screen.getByTestId("file-viewer-new-file").textContent).toBe("新建文件（卷宗）");
   });
 
   it("interpolates the {count} placeholder with the live visible count", async () => {
     await renderViewer({ ...baseProps, locale: "zh-CN" });
-    fireEvent.click(screen.getByTestId("file-viewer-filter-boards"));
+    fireEvent.click(screen.getByTestId("file-viewer-filter-shared"));
     await waitFor(() => {
-      expect(screen.getByTestId("file-viewer-count").textContent).toBe("1 项可见 · 文件夹 + 文件");
+      expect(screen.getByTestId("file-viewer-count").textContent).toBe("2 项可见 · 文件夹 + 文件");
     });
   });
 
@@ -616,7 +749,7 @@ describe("FileViewer i18n", () => {
       "other-component": { retry: string; next: string };
     };
     expect(merged["file-viewer"].filesSection).toBe("FILES");
-    expect(merged["file-viewer"].newFile).toBe("+ NEW FILE");
+    expect(merged["file-viewer"].newControl).toBe("+ NEW ▾");
     expect(merged["other-component"]).toEqual({ retry: "RETRY", next: "MORE" });
     expect(Object.keys(merged).sort()).toEqual(["file-viewer", "other-component"]);
   });

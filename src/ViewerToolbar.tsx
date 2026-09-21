@@ -30,12 +30,14 @@ export interface ViewerToolbarProps {
 }
 
 /**
- * Viewer toolbar of the file-viewer surface (v9 prototype toolbar head): the
- * breadcrumb path at the top left — every ancestor segment a back-navigation
- * target — plus the current scope's title/description and the Selection Tags
- * filter pills scoping the FILES gallery below. A presentation module
- * rendered by the FileViewer composition (decision D9); navigation and
- * filtering are delegated up through the callbacks.
+ * Viewer toolbar of the file-viewer surface (v9.3 prototype toolbar head): the
+ * breadcrumb path at the top left — ALWAYS the full current path
+ * `NEXUS / VAULT / ALL FILES / …folders`, every ancestor segment a
+ * back-navigation target — plus the current scope's title/description and
+ * the Selection Tags ownership filter pills scoping the FILES gallery below
+ * (ALL / OWNED BY ME / SHARED WITH ME, D11). A presentation module rendered
+ * by the FileViewer composition (decision D9); navigation and filtering are
+ * delegated up through the callbacks.
  *
  * No palette is hardcoded: every surface resolves to a semantic theme token
  * supplied by the host's MantineProvider.

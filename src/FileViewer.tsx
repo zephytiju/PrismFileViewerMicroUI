@@ -11,6 +11,7 @@ import { defaultMetaFor } from "./FileTile.js";
 import { FilesGallery } from "./FilesGallery.js";
 import type { GalleryPhase } from "./FilesGallery.js";
 import { HubHeader } from "./HubHeader.js";
+import type { CreateTarget } from "./HubHeader.js";
 import type { ViewerLayout } from "./LayoutToggle.js";
 import type { SelectionTag } from "./SelectionTags.js";
 import { ViewerToolbar } from "./ViewerToolbar.js";
@@ -42,13 +43,30 @@ export interface OpenFileIntent {
   readonly ontologyInterface: "IFileEntry";
 }
 
-/** Payload of the `file-viewer.create-file` intent (+ NEW FILE). */
+/** Payload of the `file-viewer.create-file` intent (+ NEW → NEW FILE). */
 export interface CreateFileIntent {
-  /** Folder to create in (current scope; null at the root). */
+  /** Folder to create in (current path; null at the root). */
   readonly scopeId: string | null;
   /** Ontology interfaces the creation targets: an IDossierDoc draft / an IFileEntry. */
   readonly ontologyInterfaces: readonly ["IDossierDoc", "IFileEntry"];
 }
+
+/** Payload of the `file-viewer.create-folder` intent (+ NEW → NEW FOLDER). */
+export interface CreateFolderIntent {
+  /** Folder to create in (current path; null at the root). */
+  readonly scopeId: string | null;
+  /** Ontology interface the creation targets: an IFileEntry of kind folder. */
+  readonly ontologyInterfaces: readonly ["IFileEntry"];
+}
+
+/**
+ * Ownership class of an entry for the ownership filter pills (D11): entries
+ * owned by the current operator vs shared with them. The bounded
+ * `FileEntrySummary` projection of IFileEntry carries no owner/shared
+ * metadata — ownership is host/operator context, so the host supplies it
+ * through the `ownershipOf` configuration callback.
+ */
+export type EntryOwnership = "owned" | "shared";
 
 /** One offered sort key (builtin ids "name" and "size" get locale labels). */
 export interface ViewerSortKey {
@@ -70,7 +88,7 @@ export interface FileViewerProps {
   readonly rootDescription?: string;
   /** IFileEntry list scope for the root listing (omit for the default scope). */
   readonly rootScope?: string;
-  /** Filter pill set (defaults to the six builtin tags, labels from the locale). */
+  /** Filter pill set (defaults to the three ownership tags, labels from the locale). */
   readonly tags?: readonly SelectionTag[];
   /** Initially active filter id (default "all"). */
   readonly initialFilter?: string;
@@ -82,8 +100,13 @@ export interface FileViewerProps {
   readonly chip?: (entry: FileEntrySummary) => string | undefined;
   /** Mono meta line — item count / edit meta (defaults to kind + bounded size). */
   readonly meta?: (entry: FileEntrySummary) => string | undefined;
-  /** Whether an entry is shared — scopes the builtin SHARED filter pill. */
-  readonly shared?: (entry: FileEntrySummary) => boolean;
+  /**
+   * Ownership class of an entry (owned by / shared with the current operator)
+   * — drives the builtin OWNED BY ME / SHARED WITH ME pills (D11). Omitted,
+   * every entry counts as owned. `FileEntrySummary` exposes no owner/shared
+   * fields (bounded projection), so ownership comes from host configuration.
+   */
+  readonly ownershipOf?: (entry: FileEntrySummary) => EntryOwnership;
   /** Page size for ISearchable queries (default 50). */
   readonly pageSize?: number;
   /** Max height of the scrollable gallery area (default 360). */
@@ -92,27 +115,35 @@ export interface FileViewerProps {
 
 /**
  * Platform Prism file-viewer micro-UI (component id "file-viewer") — the
- * merged VAULT main-viewport surface (decision D9): hub header (wordmark +
- * inventory subtitle, Layout Toggle patterns immediately right of the title,
- * workspace search, SORT, + NEW FILE), viewer toolbar (breadcrumb path at
- * the top left — every ancestor segment a back-navigation target — plus the
- * current title/description and Selection Tags filter pills), and the FILES
- * gallery: one gallery-style explorer area rendering both folders and
- * individual files as uniform tiles, folders first, every file kind
- * carrying its distinct icon.
+ * merged VAULT main-viewport surface (decision D9) with explorer semantics
+ * (decision D11): users land in the ROOT of their storage and the gallery
+ * renders ONLY the folders and files under the CURRENT path. Hub header
+ * (wordmark + inventory subtitle, Layout Toggle patterns immediately right
+ * of the title, workspace search, SORT, + NEW control with the create menu —
+ * NEW FOLDER / NEW FILE (DOSSIER), both created under the current path at
+ * any level), viewer toolbar (breadcrumb path at the top left — ALWAYS the
+ * full current path `NEXUS / VAULT / ALL FILES / …folders`, every ancestor
+ * segment a back-navigation target — plus the current title/description and
+ * the ownership filter pills ALL / OWNED BY ME / SHARED WITH ME), and the
+ * FILES gallery: one gallery-style explorer area rendering both folders and
+ * individual files as uniform tiles, folders first, every file kind carrying
+ * its distinct icon (kinds are distinguished by their icons, not filters).
  *
  * This module is the stateful composition: it owns the navigation path, the
- * local view state (sort / layout / filter), and the Lattice bindings, and
- * renders the presentation modules HubHeader (the header bar), ViewerToolbar
- * (breadcrumb + title/description + filter pills), and FilesGallery (section
- * row + the tile/rows explorer area) — see those files for their pieces.
+ * local view state (sort / layout / ownership filter), and the Lattice
+ * bindings, and renders the presentation modules HubHeader (the header bar
+ * with the create menu), ViewerToolbar (breadcrumb + title/description +
+ * filter pills), and FilesGallery (section row + the tile/rows explorer
+ * area) — see those files for their pieces.
  *
  * Lattice bindings (embedded, per the Micro-UI standards): gallery items
  * render IFileEntry records fetched through the generated FileEntryClient
  * over useLatticeTransport — entering a folder queries the entry's children
  * (scope = folder id) and pushes a path segment; the workspace search
- * issues ISearchable queries; + NEW FILE emits a creation intent
- * (IDossierDoc draft / IFileEntry); sort, layout, and filter are local view
+ * issues ISearchable queries; + NEW emits creation intents for files
+ * (IDossierDoc draft / IFileEntry) and folders (IFileEntry kind folder),
+ * both scoped to the current path; the ownership pills map entries through
+ * the `ownershipOf` configuration callback; sort and layout are local view
  * state. The breadcrumb path is published as the bounded-context shared
  * slot "vault.viewerPath"; opening a file emits the "file-viewer.open-file"
  * intent. No URLs, clients, or credentials in component code.
@@ -134,7 +165,7 @@ export function FileViewer({
   sortKeys = DEFAULT_SORT_KEYS,
   chip,
   meta,
-  shared,
+  ownershipOf,
   pageSize = DEFAULT_PAGE_SIZE,
   galleryMaxHeight = 360,
 }: FileViewerProps) {
@@ -168,8 +199,9 @@ export function FileViewer({
     });
   }, [path, publishViewerPath]);
 
-  // Entering a folder queries the entry's children; a search issues an
-  // ISearchable query. Cancelled renders keep only the latest response.
+  // Entering a folder queries the entry's children (the gallery renders only
+  // the current path); a search issues an ISearchable query. Cancelled
+  // renders keep only the latest response.
   useEffect(() => {
     let cancelled = false;
     const run = async (): Promise<void> => {
@@ -221,10 +253,7 @@ export function FileViewer({
     () =>
       tags ?? [
         { id: "all", label: strings.filterAll },
-        { id: "folders", label: strings.filterFolders },
-        { id: "dossiers", label: strings.filterDossiers },
-        { id: "boards", label: strings.filterBoards },
-        { id: "world", label: strings.filterWorld },
+        { id: "owned", label: strings.filterOwned },
         { id: "shared", label: strings.filterShared },
       ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- strings follow locale
@@ -240,29 +269,23 @@ export function FileViewer({
         ? strings.sortSize
         : activeSortKey.id.toUpperCase());
 
-  // Filter pills scope which entries the gallery renders; folders always
-  // render first; the active sort key orders within each group.
+  // Ownership pills scope which entries under the current path the gallery
+  // renders (D11): entries owned by the operator vs shared with them. Kinds
+  // are distinguished by their icons, not filters. Folders always render
+  // first; the active sort key orders within each group. Entries default to
+  // owned when no ownershipOf callback is configured.
   const visible = useMemo(() => {
     const matches = (entry: FileEntrySummary): boolean => {
       if (filter === "all") {
         return true;
       }
       if (filter === "shared") {
-        return shared?.(entry) === true;
+        return ownershipOf?.(entry) === "shared";
       }
-      if (filter === "folders") {
-        return entry.kind === "folder";
+      if (filter === "owned") {
+        return ownershipOf?.(entry) !== "shared";
       }
-      if (filter === "dossiers") {
-        return entry.kind === "dossier";
-      }
-      if (filter === "boards") {
-        return entry.kind === "board";
-      }
-      if (filter === "world") {
-        return entry.kind === "world";
-      }
-      return entry.kind === filter;
+      return true;
     };
     const filtered = (entries ?? []).filter(matches);
     const compare = (a: FileEntrySummary, b: FileEntrySummary): number => {
@@ -274,7 +297,7 @@ export function FileViewer({
     const folders = filtered.filter((entry) => entry.kind === "folder").sort(compare);
     const files = filtered.filter((entry) => entry.kind !== "folder").sort(compare);
     return [...folders, ...files];
-  }, [entries, filter, shared, activeSortKey]);
+  }, [entries, filter, ownershipOf, activeSortKey]);
 
   const currentFolder = path.length > 0 ? (path[path.length - 1] as FileEntrySummary) : null;
   const toolbarTitle = currentFolder !== null ? currentFolder.name : (rootTitle ?? strings.rootTitle);
@@ -316,13 +339,26 @@ export function FileViewer({
     setSearch(null);
   }, []);
 
-  // + NEW FILE emits the creation intent for the current scope.
-  const createFile = useCallback((): void => {
-    emitPrismEvent("file-viewer.create-file", {
-      scopeId: currentFolder !== null ? currentFolder.id : null,
-      ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
-    } satisfies CreateFileIntent);
-  }, [currentFolder]);
+  // + NEW emits the creation intent for the current path (D11): NEW FOLDER
+  // targets an IFileEntry of kind folder; NEW FILE an IDossierDoc draft /
+  // IFileEntry.
+  const create = useCallback(
+    (target: CreateTarget): void => {
+      const scopeId = currentFolder !== null ? currentFolder.id : null;
+      if (target === "folder") {
+        emitPrismEvent("file-viewer.create-folder", {
+          scopeId,
+          ontologyInterfaces: ["IFileEntry"],
+        } satisfies CreateFolderIntent);
+        return;
+      }
+      emitPrismEvent("file-viewer.create-file", {
+        scopeId,
+        ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
+      } satisfies CreateFileIntent);
+    },
+    [currentFolder],
+  );
 
   const cycleSort = (): void => {
     setSortIndex((index) => index + 1);
@@ -348,7 +384,8 @@ export function FileViewer({
   return (
     <Stack gap={0} w="100%" miw={0} style={{ background: DEEP }} data-testid="file-viewer">
       {/* Hub header: wordmark + inventory subtitle, Layout Toggle patterns
-          immediately right of the title, then search / SORT / + NEW FILE. */}
+          immediately right of the title, then search / SORT / + NEW (create
+          menu: NEW FOLDER / NEW FILE under the current path). */}
       <HubHeader
         strings={strings}
         title={title}
@@ -360,11 +397,12 @@ export function FileViewer({
         onSubmitSearch={submitSearch}
         activeSortLabel={activeSortLabel}
         onSortCycle={cycleSort}
-        onCreateFile={createFile}
+        onCreate={create}
       />
 
-      {/* Viewer toolbar: breadcrumb path (top left, back-navigation), current
-          title + description, Selection Tags filter pills; FILES gallery. */}
+      {/* Viewer toolbar: breadcrumb path (top left, ALWAYS the full current
+          path with back-navigation), current title + description, ownership
+          filter pills; FILES gallery. */}
       <Stack gap={0} px={24} pt={20} pb={24} miw={0}>
         <ViewerToolbar
           strings={strings}

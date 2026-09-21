@@ -7,20 +7,23 @@
  *    SAME semantic token keys onto different palettes, proving the component
  *    ships no palette of its own;
  *  - the mock host executor (setPrismActionExecutor) serving the synthetic
- *    VAULT tree from the authoritative v9 prototype as IFileEntry listings
- *    (per-folder children queries) and ISearchable search results — the
- *    component itself never sees a URL or client, only the embedded
- *    generated clients over useLatticeTransport;
- *  - every piece of demo test data (the synthetic tree, folder taxonomy
- *    chips / meta lines / shared flags as configuration callbacks);
+ *    VAULT tree from the authoritative v9.3 prototype as IFileEntry listings
+ *    (per-folder children queries — the gallery renders only the current
+ *    path, D11) and ISearchable search results — the component itself never
+ *    sees a URL or client, only the embedded generated clients over
+ *    useLatticeTransport;
+ *  - every piece of demo test data (the synthetic tree with MIXED ownership
+ *    — some entries owned by the operator, some shared with them — plus
+ *    folder taxonomy chips / meta lines as configuration callbacks);
  *  - the demo page: TWO FileViewer instances side by side, each inside its
  *    own MantineProvider with a different theme, plus an EN | 中文 language
  *    switcher — one GLOBAL control that drives every instance, and a
  *    per-instance control proving locale is a per-instance prop. Channel
- *    monitors below show the "vault.viewerPath" shared-slot publication,
- *    the "file-viewer.open-file" / "file-viewer.create-file" intents, and
- *    the mock Lattice call log; a toggle makes the executor fail so the
- *    error-with-retry branch is demonstrable in both themes at once.
+ *    monitors below show the "vault.viewerPath" shared-slot publication, the
+ *    "file-viewer.open-file" / "file-viewer.create-file" /
+ *    "file-viewer.create-folder" intents, and the mock Lattice call log; a
+ *    toggle makes the executor fail so the error-with-retry branch is
+ *    demonstrable in both themes at once.
  */
 import { useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
@@ -39,7 +42,12 @@ import {
 import type { MantineThemeOverride } from "@mantine/core";
 import { setPrismActionExecutor, usePrismEvent, usePrismStateValue } from "@zephytiju/prism-react";
 import { FileViewer } from "./FileViewer.js";
-import type { CreateFileIntent, OpenFileIntent, ViewerPath } from "./FileViewer.js";
+import type {
+  CreateFileIntent,
+  CreateFolderIntent,
+  OpenFileIntent,
+  ViewerPath,
+} from "./FileViewer.js";
 import type { FileViewerLocale } from "./locales/index.js";
 import "@mantine/core/styles.css";
 
@@ -123,9 +131,11 @@ export const latticeLightTheme = createTheme({
 });
 
 // ---------------------------------------------------------------------------
-// Demo test data — the synthetic VAULT tree from the authoritative v9
-// prototype (vault-standalone.html), served as IFileEntry records. Folder
-// taxonomy chips / meta lines / shared flags ride along as host configuration
+// Demo test data — the synthetic VAULT tree from the authoritative v9.3
+// prototype (vault-standalone.html), served as IFileEntry records. Ownership
+// is MIXED (D11): some entries are owned by the operator, some shared with
+// them, so the OWNED BY ME / SHARED WITH ME pills visibly scope the gallery.
+// Folder taxonomy chips / meta lines ride along as host configuration
 // callbacks keyed by entry id (mirrored by scripts/shot-demo.mjs).
 // ---------------------------------------------------------------------------
 
@@ -135,6 +145,7 @@ interface DemoNode {
   readonly kind: "folder" | "dossier" | "board" | "world";
   readonly chip?: string;
   readonly meta?: string;
+  /** Shared-with-the-operator flag (mock ownership; absent = owned). */
   readonly shared?: boolean;
   readonly sizeBytes?: number;
   readonly children?: readonly DemoNode[];
@@ -272,6 +283,7 @@ const DEMO_TREE: readonly DemoNode[] = [
   { id: "doc-root-border-log", name: "Border Incident Log", kind: "dossier", meta: "DOSSIER FILE · EDITED 1H AGO · 9 BLOCKS", sizeBytes: 377_000 },
   { id: "wld-root-terminal-watch", name: "Terminal Surveillance View", kind: "world", meta: "GEOVISION FILE · SAVED STATE", sizeBytes: 1_402_000 },
   { id: "doc-root-source-reliability", name: "Source Reliability Matrix", kind: "dossier", meta: "REFERENCE · 6 BLOCKS", sizeBytes: 129_000 },
+  { id: "doc-root-joint-trade", name: "Joint Trade Assessment", kind: "dossier", meta: "DOSSIER FILE · SHARED BY HQ · 7 BLOCKS", shared: true, sizeBytes: 298_000 },
 ];
 
 const nodeById = new Map<string, DemoNode>();
@@ -392,19 +404,23 @@ export function toggleDemoFailure(): boolean {
 
 // ---------------------------------------------------------------------------
 // Host configuration callbacks — folder taxonomy chips, per-entry meta lines,
-// and the shared flags, keyed by entry id (the demo's ontology taxonomy).
+// and the ownership classes, keyed by entry id (the demo's ontology
+// taxonomy). The bounded FileEntrySummary projection of IFileEntry carries
+// no owner/shared fields, so ownership comes from this host callback — the
+// mock marks some entries shared-with-the-operator, the rest owned (D11).
 // ---------------------------------------------------------------------------
 
 const demoChip = (entry: { readonly id: string }): string | undefined => nodeById.get(entry.id)?.chip;
 const demoMeta = (entry: { readonly id: string }): string | undefined => nodeById.get(entry.id)?.meta;
-const demoShared = (entry: { readonly id: string }): boolean => nodeById.get(entry.id)?.shared === true;
+const demoOwnership = (entry: { readonly id: string }): "owned" | "shared" =>
+  nodeById.get(entry.id)?.shared === true ? "shared" : "owned";
 
 const demoFileViewerProps = {
   pageSize: 50,
   galleryMaxHeight: 800,
   chip: demoChip,
   meta: demoMeta,
-  shared: demoShared,
+  ownershipOf: demoOwnership,
 };
 
 // ---------------------------------------------------------------------------
@@ -458,7 +474,7 @@ function OpenFileMonitor() {
   );
 }
 
-/** Monitor for the + NEW FILE creation intent (last payload wins). */
+/** Monitor for the + NEW → NEW FILE creation intent (last payload wins). */
 function CreateFileMonitor() {
   const [last, setLast] = useState<CreateFileIntent | null>(null);
   usePrismEvent("file-viewer.create-file", (payload) => {
@@ -470,6 +486,24 @@ function CreateFileMonitor() {
         file-viewer.create-file (intent — last payload)
       </Text>
       <Text size="sm" c="var(--mantine-color-muted-filled)" data-testid="demo-create-file">
+        {last === null ? "null" : JSON.stringify(last)}
+      </Text>
+    </Stack>
+  );
+}
+
+/** Monitor for the + NEW → NEW FOLDER creation intent (last payload wins). */
+function CreateFolderMonitor() {
+  const [last, setLast] = useState<CreateFolderIntent | null>(null);
+  usePrismEvent("file-viewer.create-folder", (payload) => {
+    setLast(payload as CreateFolderIntent);
+  });
+  return (
+    <Stack gap={4} miw={0}>
+      <Text size="sm" fw={600} c="var(--mantine-color-text-filled)">
+        file-viewer.create-folder (intent — last payload)
+      </Text>
+      <Text size="sm" c="var(--mantine-color-muted-filled)" data-testid="demo-create-folder">
         {last === null ? "null" : JSON.stringify(last)}
       </Text>
     </Stack>
@@ -604,18 +638,23 @@ function DemoPage() {
       <Box mih="100vh" p={24} style={{ background: "var(--mantine-color-deep-filled)" }} data-testid="demo-page">
         <Stack gap={16} maw={1860}>
           <Title order={3} c="var(--mantine-color-text-filled)">
-            Prism file-viewer demo — merged VAULT surface (D9) × theme swap × locale swap
+            Prism file-viewer demo — explorer VAULT surface (D9+D11) × theme swap × locale swap
           </Title>
           <Text size="sm" c="var(--mantine-color-muted-filled)" data-testid="demo-caption">
             Two hosts, two palettes, one component: the same semantic tokens mapped onto the GeoVision
-            VAULT prototype palette (left, dark) and Lattice Light (right, light). Each instance browses
-            the synthetic v9 vault tree through the embedded IFileEntry client — folder tiles navigate
-            into folders (per-folder children re-query), the breadcrumb path at the top left navigates
-            back at any level, and file tiles emit the open-file intent. The LANGUAGE switch drives both
-            instances; each host also carries its own EN/中文 control. The viewerPath monitor shows the
-            shared-slot publication (the most recent navigation — two demo instances share one global
-            slot); sort / layout / filter stay per-instance local state. The fail toggle makes the mock
-            Lattice executor reject calls so the error + Retry branch can be inspected in both themes.
+            VAULT prototype palette (left, dark) and Lattice Light (right, light). Each instance lands in
+            the ROOT of its storage and browses like a file explorer through the embedded IFileEntry
+            client — the gallery renders only the folders and files under the CURRENT path, folder tiles
+            navigate in (per-folder children re-query) while the breadcrumb at the top left always shows
+            the full current path and navigates back at any level, and file tiles emit the open-file
+            intent. The ownership pills (ALL / OWNED BY ME / SHARED WITH ME) scope the rendered entries;
+            file kinds are told apart by their distinct icons. The + NEW control opens the create menu —
+            NEW FOLDER / NEW FILE (DOSSIER) — with the creation scoped to the current path (watch the
+            create-folder / create-file monitors). The LANGUAGE switch drives both instances; each host
+            also carries its own EN/中文 control. The viewerPath monitor shows the shared-slot
+            publication (the most recent navigation — two demo instances share one global slot); sort /
+            layout / filter stay per-instance local state. The fail toggle makes the mock Lattice
+            executor reject calls so the error + Retry branch can be inspected in both themes.
           </Text>
           <Stack gap={20} data-testid="demo-locale-stage">
             <Group gap={10} wrap="nowrap" align="center" data-testid="demo-locale-bar">
@@ -678,6 +717,7 @@ function DemoPage() {
             <ViewerPathMonitor />
             <OpenFileMonitor />
             <CreateFileMonitor />
+            <CreateFolderMonitor />
             <LatticeLogMonitor />
           </Stack>
           <Text fz={9} ff={MONO} c="var(--mantine-color-muted-filled)">

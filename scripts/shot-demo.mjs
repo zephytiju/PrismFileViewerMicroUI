@@ -1,18 +1,28 @@
 // Demo screenshot driver: boots the vite dev server on a unique port, drives
-// the dual-theme file-viewer demo in headless Chrome, and captures THREE
-// shots at 2x:
-//  1. demo-file-viewer-root.png — the root FILES gallery (grid) with folders
-//     AND individual files of every kind (distinct per-kind icons) in BOTH
-//     themes and BOTH locales (LEFT GeoVision dark · en, RIGHT Lattice
-//     Light · zh-CN, set through the per-instance controls);
-//  2. demo-file-viewer-folder.png — folder drill-down in the LEFT instance
-//     (breadcrumb extended two segments deep, gallery re-queried) with the
-//     RIGHT instance switched to the LIST presentation through the Layout
-//     Toggle (full-width rows);
-//  3. demo-file-viewer-back-open.png — after back-navigation through the
-//     breadcrumb's ancestor segments (LEFT instance back at the root; the
-//     viewerPath monitor shows the reset segments) and a file row click in
-//     the RIGHT instance (the open-file intent monitor shows the payload).
+// the dual-theme file-viewer demo in headless Chrome, and captures FIVE shots
+// at 2x (D11 explorer semantics):
+//  1. demo-file-viewer-explorer-root.png — the root FILES gallery: BOTH
+//     panels land in the storage root with the three ownership pills
+//     (ALL / OWNED BY ME / SHARED WITH ME) and the + NEW control (LEFT
+//     GeoVision dark · en, RIGHT Lattice Light · zh-CN, set through the
+//     per-instance controls);
+//  2. demo-file-viewer-explorer-ownership.png — ownership filtering: LEFT
+//     instance on SHARED WITH ME (only the shared folder + shared file
+//     render), RIGHT instance on OWNED BY ME (zh 我拥有的);
+//  3. demo-file-viewer-explorer-path.png — folder drill-down in BOTH panels:
+//     LEFT two levels deep (breadcrumb NEXUS / VAULT / ALL FILES /
+//     OPERATION REDWATER / EO IMAGERY — the root segment persists and the
+//     path extends per entered folder), RIGHT one level deep (zh breadcrumb
+//     NEXUS / 文件库 / 全部文件 / SUPPLY CORRIDOR);
+//  4. demo-file-viewer-explorer-create.png — the + NEW menu open inside the
+//     current folder (NEW FOLDER / NEW FILE (DOSSIER) — creation scoped to
+//     the current path); after the shot both intents are fired and the
+//     create-folder / create-file monitors show scopeId = the current folder;
+//  5. demo-file-viewer-explorer-back.png — back-navigation through the
+//     persistent ALL FILES breadcrumb segment (LEFT back at the root, the
+//     viewerPath monitor shows scopeId: null) and an open-file intent from
+//     the RIGHT instance's list rows (monitor shows the payload with the
+//     containing scope).
 // The demo installs the mock Lattice executor on mount and seeds nothing on
 // channels — the components fetch through the embedded clients (see
 // src/demo.tsx). Demo-only tooling; not part of the published package.
@@ -27,9 +37,11 @@ const PORT = 4176;
 const BASE_URL = `http://localhost:${PORT}/`;
 const OUT_DIR = "/tmp/guanlan-review";
 const OUT_PATHS = {
-  root: path.join(OUT_DIR, "demo-file-viewer-root.png"),
-  folder: path.join(OUT_DIR, "demo-file-viewer-folder.png"),
-  back: path.join(OUT_DIR, "demo-file-viewer-back-open.png"),
+  root: path.join(OUT_DIR, "demo-file-viewer-explorer-root.png"),
+  ownership: path.join(OUT_DIR, "demo-file-viewer-explorer-ownership.png"),
+  path: path.join(OUT_DIR, "demo-file-viewer-explorer-path.png"),
+  create: path.join(OUT_DIR, "demo-file-viewer-explorer-create.png"),
+  back: path.join(OUT_DIR, "demo-file-viewer-explorer-back.png"),
 };
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const MIN_BYTES = 40_000;
@@ -96,6 +108,18 @@ async function clickSegmentedOption(page, rootSelector, optionText) {
   }
 }
 
+/** Clicks a testid inside one demo panel, throwing when it is missing. */
+async function clickInPanel(page, panel, testid) {
+  const selector = `[data-testid="${panel}"] [data-testid="${testid}"]`;
+  await page.waitForSelector(selector);
+  await page.click(selector);
+}
+
+/** Text of a testid inside one demo panel (null when absent). */
+async function textInPanel(page, panel, testid) {
+  return page.$eval(`[data-testid="${panel}"] [data-testid="${testid}"]`, (el) => el.textContent).catch(() => null);
+}
+
 async function capture(page, outPath) {
   const pageRoot = await page.waitForSelector('[data-testid="demo-page"]');
   await pageRoot.screenshot({ path: outPath });
@@ -124,14 +148,19 @@ try {
   await clickSegmentedOption(page, '[data-testid="demo-instance-locale-b"]', "中文");
 
   // Wait for BOTH galleries to finish their root children query and render
-  // the folder tiles plus one tile of every file kind in the LEFT instance.
+  // the folder tiles plus one tile of every file kind in the LEFT instance,
+  // and the three ownership pills + the + NEW control in both.
   await page.waitForSelector('[data-testid="demo-locale-stage"]');
   await page.waitForFunction(() => {
     const panels = document.querySelectorAll('[data-testid^="demo-viewer-panel-"]');
     const tiles = document.querySelectorAll('[data-testid^="demo-viewer-panel-"] [data-testid^="file-viewer-tile-"]');
+    const pills = document.querySelectorAll('[data-testid^="demo-viewer-panel-"] [data-testid^="file-viewer-filter-"]');
+    const newControl = document.querySelectorAll('[data-testid^="demo-viewer-panel-"] [data-testid="file-viewer-new"]');
     return (
       panels.length === 2 &&
       tiles.length >= 12 &&
+      pills.length === 6 &&
+      newControl.length === 2 &&
       document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-fld-redwater"]') !== null &&
       document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-doc-root-redwater-brief"]') !== null &&
       document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-brd-root-ac0052"]') !== null &&
@@ -139,71 +168,134 @@ try {
     );
   });
 
-  // Shot 1 — root FILES gallery: both themes, both locales, folders + files
-  // of every kind with distinct icons.
+  // Shot 1 — root view: users land in the storage root; the gallery renders
+  // the root's folders + files of every kind with distinct icons; the three
+  // ownership pills and the + NEW control are visible in both themes.
   await mkdir(OUT_DIR, { recursive: true });
   await capture(page, OUT_PATHS.root);
 
-  // Drill into OPERATION REDWATER, then EO IMAGERY — the LEFT instance's
-  // breadcrumb extends one segment per folder and the gallery re-queries the
-  // folder's children through the embedded IFileEntry client.
-  await page.click('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-fld-redwater"]');
+  // Ownership filtering (D11): LEFT → SHARED WITH ME, RIGHT → OWNED BY ME.
+  // The mock tree carries mixed ownership, so the pills visibly re-scope the
+  // rendered entries under the current path.
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-filter-shared");
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('[data-testid="demo-viewer-panel-a"]');
+    const gallery = panel?.querySelector('[data-testid="file-viewer-gallery"]');
+    const tiles = gallery?.querySelectorAll('[data-testid^="file-viewer-tile-"]');
+    return (
+      tiles?.length === 2 &&
+      gallery?.querySelector('[data-testid="file-viewer-tile-fld-shared-analysis"]') != null &&
+      gallery?.querySelector('[data-testid="file-viewer-tile-doc-root-joint-trade"]') != null
+    );
+  });
+  await clickInPanel(page, "demo-viewer-panel-b", "file-viewer-filter-owned");
+  await page.waitForFunction(() => {
+    const gallery = document.querySelector(
+      '[data-testid="demo-viewer-panel-b"] [data-testid="file-viewer-gallery"]',
+    );
+    return (
+      gallery?.querySelectorAll('[data-testid^="file-viewer-tile-"]').length === 15 &&
+      gallery?.querySelector('[data-testid="file-viewer-tile-fld-shared-analysis"]') == null
+    );
+  });
+
+  // Shot 2 — ownership pills demonstrably scope the current-path listing.
+  await capture(page, OUT_PATHS.ownership);
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-filter-all");
+  await clickInPanel(page, "demo-viewer-panel-b", "file-viewer-filter-all");
+
+  // Drill-down in BOTH panels — the breadcrumb must always reflect the full
+  // current path (D11): the persistent root segment ALL FILES stays and the
+  // path extends one segment per entered folder.
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-tile-fld-redwater");
   await page.waitForFunction(() => {
     const crumb = document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-current"]');
     return crumb !== null && crumb.textContent === "OPERATION REDWATER";
   });
   await page.waitForSelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-fld-eo-imagery"]');
-  await page.click('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-fld-eo-imagery"]');
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-tile-fld-eo-imagery");
   await page.waitForFunction(() => {
-    const crumb = document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-current"]');
-    return crumb !== null && crumb.textContent === "EO IMAGERY";
+    const panel = document.querySelector('[data-testid="demo-viewer-panel-a"]');
+    const current = panel?.querySelector('[data-testid="file-viewer-crumb-current"]')?.textContent;
+    const root = panel?.querySelector('[data-testid="file-viewer-crumb-root"]')?.textContent;
+    const ancestor = panel?.querySelector('[data-testid="file-viewer-crumb-0"]')?.textContent;
+    return (
+      current === "EO IMAGERY" && root === "ALL FILES" && ancestor === "OPERATION REDWATER" &&
+      panel?.querySelector('[data-testid="file-viewer-tile-doc-redwater-overhead-14"]') != null
+    );
   });
-  await page.waitForSelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-tile-doc-redwater-overhead-14"]');
+  await clickInPanel(page, "demo-viewer-panel-b", "file-viewer-tile-fld-supply-corridor");
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('[data-testid="demo-viewer-panel-b"]');
+    const current = panel?.querySelector('[data-testid="file-viewer-crumb-current"]')?.textContent;
+    const root = panel?.querySelector('[data-testid="file-viewer-crumb-root"]')?.textContent;
+    return (
+      current === "SUPPLY CORRIDOR" && root === "全部文件" &&
+      panel?.querySelector('[data-testid="file-viewer-tile-doc-convoy07"]') != null
+    );
+  });
 
-  // Switch the RIGHT (zh-CN) instance to the LIST presentation through its
-  // Layout Toggle — full-width scrolling rows.
-  await page.click('[data-testid="demo-viewer-panel-b"] [data-testid="file-viewer-layout-list"]');
+  // Shot 3 — folder interior in both panels: breadcrumb extended beyond the
+  // persistent root segment, gallery re-queried to the current path only.
+  await capture(page, OUT_PATHS.path);
+
+  // Create menu (D11): open + NEW inside the LEFT instance's current folder —
+  // NEW FOLDER / NEW FILE (DOSSIER), both scoped to the current path.
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-new");
+  await page.waitForSelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-new-menu"]');
+  await page.waitForFunction(() => {
+    const menu = document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-new-menu"]');
+    return (
+      menu?.querySelector('[data-testid="file-viewer-new-folder"]')?.textContent === "NEW FOLDER" &&
+      menu?.querySelector('[data-testid="file-viewer-new-file"]')?.textContent === "NEW FILE (DOSSIER)"
+    );
+  });
+
+  // Shot 4 — the create menu open with the extended breadcrumb behind it.
+  await capture(page, OUT_PATHS.create);
+
+  // Fire both creation intents from inside EO IMAGERY: the monitors show the
+  // current path (fld-eo-imagery) as the parent of both creations.
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-new-folder");
+  await page.waitForFunction(() => {
+    const monitor = document.querySelector('[data-testid="demo-create-folder"]');
+    return monitor !== null && (monitor.textContent ?? "").includes("fld-eo-imagery");
+  });
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-new");
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-new-file");
+  await page.waitForFunction(() => {
+    const monitor = document.querySelector('[data-testid="demo-create-file"]');
+    return monitor !== null && (monitor.textContent ?? "").includes("fld-eo-imagery");
+  });
+
+  // Back-navigation through the persistent ALL FILES segment (LEFT back to
+  // the root — viewerPath monitor shows scopeId: null) and an open-file
+  // intent from the RIGHT instance's list rows (scopeId = the folder).
+  await clickInPanel(page, "demo-viewer-panel-a", "file-viewer-crumb-root");
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('[data-testid="demo-viewer-panel-a"]');
+    const monitor = document.querySelector('[data-testid="demo-viewer-path"]');
+    return (
+      panel?.querySelector('[data-testid="file-viewer-crumb-current"]')?.textContent === "ALL FILES" &&
+      panel?.querySelector('[data-testid="file-viewer-tile-fld-redwater"]') != null &&
+      monitor !== null && (monitor.textContent ?? "").includes("scopeId: null")
+    );
+  });
+  await clickInPanel(page, "demo-viewer-panel-b", "file-viewer-layout-list");
   await page.waitForFunction(() => {
     const rows = document.querySelectorAll('[data-testid="demo-viewer-panel-b"] [data-testid^="file-viewer-row-"]');
-    return rows.length >= 8;
+    return rows.length >= 4;
   });
-  await new Promise((resolve) => {
-    setTimeout(resolve, 400);
-  });
-
-  // Shot 2 — folder drill-down (extended breadcrumb) + list presentation.
-  await capture(page, OUT_PATHS.folder);
-
-  // Back-navigation: the ancestor segment returns to OPERATION REDWATER
-  // (that folder becomes current), then the VAULT area segment returns to
-  // the root — the viewerPath monitor shows the segments collapsing.
-  await page.click('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-0"]');
-  await page.waitForFunction(() => {
-    const crumb = document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-current"]');
-    return crumb !== null && crumb.textContent === "OPERATION REDWATER";
-  });
-  await page.click('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-area"]');
-  await page.waitForFunction(() => {
-    const crumb = document.querySelector('[data-testid="demo-viewer-panel-a"] [data-testid="file-viewer-crumb-current"]');
-    return crumb !== null && crumb.textContent === "ALL FILES";
-  });
-  await page.waitForFunction(() => {
-    const monitor = document.querySelector('[data-testid="demo-viewer-path"]');
-    return monitor !== null && (monitor.textContent ?? "").includes("scopeId: null");
-  });
-
-  // Open a file from the RIGHT instance's list rows: the open-file intent
-  // monitor shows the published payload.
-  await page.click('[data-testid="demo-viewer-panel-b"] [data-testid="file-viewer-row-doc-root-redwater-brief"]');
+  await clickInPanel(page, "demo-viewer-panel-b", "file-viewer-row-doc-convoy07");
   await page.waitForFunction(() => {
     const monitor = document.querySelector('[data-testid="demo-open-file"]');
-    return monitor !== null && (monitor.textContent ?? "").includes("doc-root-redwater-brief");
+    return monitor !== null && (monitor.textContent ?? "").includes("doc-convoy07");
   });
   await new Promise((resolve) => {
     setTimeout(resolve, 400);
   });
 
-  // Shot 3 — back at the root after breadcrumb navigation + open-file intent.
+  // Shot 5 — back at the root via the breadcrumb + open-file intent payload.
   await capture(page, OUT_PATHS.back);
 } finally {
   if (browser !== undefined) {
