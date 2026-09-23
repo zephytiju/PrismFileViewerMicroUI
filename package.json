@@ -2,7 +2,7 @@
   "name": "@zephytiju/prism-file-viewer",
   "version": "0.1.0",
   "type": "module",
-  "description": "Platform Prism file-viewer micro-UI (component id \"file-viewer\"): the merged VAULT main-viewport surface (decision D9) — hub header (wordmark + inventory subtitle, layout-toggle patterns, workspace search, SORT, + NEW FILE), viewer toolbar (breadcrumb path at the top left with ancestor back-navigation, current title/description, selection-tag filter pills) and the FILES gallery (uniform tiles for folders and individual files, folders first, distinct per-kind icons, grid default and list via the Layout Toggle). Browses IFileEntry records through embedded generated clients over useLatticeTransport (per-folder children queries, ISearchable search), publishes the vault.viewerPath shared slot, and emits open-file / create-file intents. Ships en + zh-CN locale bundles.",
+  "description": "Platform Prism file-viewer micro-UI (component id \"file-viewer\"): the merged VAULT main-viewport surface with standard file-explorer semantics (decisions D9+D11) — hub header (wordmark + inventory subtitle, layout-toggle patterns, workspace search, SORT, + NEW create menu: NEW FOLDER / NEW FILE (DOSSIER) scoped to the current path), viewer toolbar (breadcrumb path at the top left that always reflects the full current path with the persistent root segment and ancestor back-navigation, current title/description, ownership filter pills ALL / OWNED BY ME / SHARED WITH ME) and the FILES gallery (renders only the folders and files under the current path; uniform tiles for folders and individual files, folders first, distinct per-kind icons, grid default and list via the Layout Toggle). Browses IFileEntry records through embedded generated clients over useLatticeTransport (per-folder children queries, ISearchable search), publishes the vault.viewerPath shared slot, and emits open-file / create-file / create-folder intents. Ships en + zh-CN locale bundles.",
   "license": "UNLICENSED",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,8 +13,13 @@
     },
     "./locales/*": "./locales/*"
   },
-  "publishConfig": { "access": "public" },
-  "files": ["dist", "locales"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "locales"
+  ],
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-locales.mjs",

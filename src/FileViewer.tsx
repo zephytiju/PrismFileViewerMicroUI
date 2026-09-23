@@ -1,23 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { Alert, Box, Button, Group, Skeleton, Stack, Text, TextInput, UnstyledButton } from "@mantine/core";
+import { Stack } from "@mantine/core";
 import {
   createFileEntryClient,
   createSearchableClient,
 } from "@zephytiju/lattice-common-interfaces";
 import type { FileEntrySummary } from "@zephytiju/lattice-common-interfaces";
 import { emitPrismEvent, useLatticeTransport, usePrismStateSetter } from "@zephytiju/prism-react";
-import { FileTile, defaultMetaFor } from "./FileTile.js";
-import { LayoutToggle } from "./LayoutToggle.js";
+import { defaultMetaFor } from "./FileTile.js";
+import { FilesGallery } from "./FilesGallery.js";
+import type { GalleryPhase } from "./FilesGallery.js";
+import { HubHeader } from "./HubHeader.js";
+import type { CreateTarget } from "./HubHeader.js";
 import type { ViewerLayout } from "./LayoutToggle.js";
-import { SelectionTags } from "./SelectionTags.js";
 import type { SelectionTag } from "./SelectionTags.js";
-import { ViewerBreadcrumb } from "./ViewerBreadcrumb.js";
+import { ViewerToolbar } from "./ViewerToolbar.js";
 import type { ViewerPathSegment } from "./ViewerBreadcrumb.js";
-import { SearchIcon } from "./icons.js";
 import { kindChipLabel } from "./kinds.js";
 import { formatMessage, stringsForLocale } from "./locales/index.js";
 import type { FileViewerLocale } from "./locales/index.js";
+import { DEFAULT_PAGE_SIZE, DEFAULT_SORT_KEYS, DEEP } from "./viewerTokens.js";
 
 /**
  * Payload published on the bounded-context shared slot `vault.viewerPath` —
@@ -41,13 +43,30 @@ export interface OpenFileIntent {
   readonly ontologyInterface: "IFileEntry";
 }
 
-/** Payload of the `file-viewer.create-file` intent (+ NEW FILE). */
+/** Payload of the `file-viewer.create-file` intent (+ NEW → NEW FILE). */
 export interface CreateFileIntent {
-  /** Folder to create in (current scope; null at the root). */
+  /** Folder to create in (current path; null at the root). */
   readonly scopeId: string | null;
   /** Ontology interfaces the creation targets: an IDossierDoc draft / an IFileEntry. */
   readonly ontologyInterfaces: readonly ["IDossierDoc", "IFileEntry"];
 }
+
+/** Payload of the `file-viewer.create-folder` intent (+ NEW → NEW FOLDER). */
+export interface CreateFolderIntent {
+  /** Folder to create in (current path; null at the root). */
+  readonly scopeId: string | null;
+  /** Ontology interface the creation targets: an IFileEntry of kind folder. */
+  readonly ontologyInterfaces: readonly ["IFileEntry"];
+}
+
+/**
+ * Ownership class of an entry for the ownership filter pills (D11): entries
+ * owned by the current operator vs shared with them. The bounded
+ * `FileEntrySummary` projection of IFileEntry carries no owner/shared
+ * metadata — ownership is host/operator context, so the host supplies it
+ * through the `ownershipOf` configuration callback.
+ */
+export type EntryOwnership = "owned" | "shared";
 
 /** One offered sort key (builtin ids "name" and "size" get locale labels). */
 export interface ViewerSortKey {
@@ -69,7 +88,7 @@ export interface FileViewerProps {
   readonly rootDescription?: string;
   /** IFileEntry list scope for the root listing (omit for the default scope). */
   readonly rootScope?: string;
-  /** Filter pill set (defaults to the six builtin tags, labels from the locale). */
+  /** Filter pill set (defaults to the three ownership tags, labels from the locale). */
   readonly tags?: readonly SelectionTag[];
   /** Initially active filter id (default "all"). */
   readonly initialFilter?: string;
@@ -81,44 +100,50 @@ export interface FileViewerProps {
   readonly chip?: (entry: FileEntrySummary) => string | undefined;
   /** Mono meta line — item count / edit meta (defaults to kind + bounded size). */
   readonly meta?: (entry: FileEntrySummary) => string | undefined;
-  /** Whether an entry is shared — scopes the builtin SHARED filter pill. */
-  readonly shared?: (entry: FileEntrySummary) => boolean;
+  /**
+   * Ownership class of an entry (owned by / shared with the current operator)
+   * — drives the builtin OWNED BY ME / SHARED WITH ME pills (D11). Omitted,
+   * every entry counts as owned. `FileEntrySummary` exposes no owner/shared
+   * fields (bounded projection), so ownership comes from host configuration.
+   */
+  readonly ownershipOf?: (entry: FileEntrySummary) => EntryOwnership;
   /** Page size for ISearchable queries (default 50). */
   readonly pageSize?: number;
   /** Max height of the scrollable gallery area (default 360). */
   readonly galleryMaxHeight?: number | string;
 }
 
-const MONO = "var(--mantine-font-family-monospace)";
-const TEXT = "var(--mantine-color-text-filled)";
-const MUTED = "var(--mantine-color-muted-filled)";
-const DEEP = "var(--mantine-color-deep-filled)";
-const CARD_DARK = "var(--mantine-color-card-dark-filled)";
-const CARD_BG = "var(--mantine-color-card-filled)";
-const BORDER = "var(--mantine-color-border-filled)";
-const LINE = "var(--mantine-color-line-filled)";
-const ACCENT = "var(--mantine-color-accent-filled)";
-
-const DEFAULT_SORT_KEYS: readonly ViewerSortKey[] = [{ id: "name" }, { id: "size" }];
-const DEFAULT_PAGE_SIZE = 50;
-
 /**
  * Platform Prism file-viewer micro-UI (component id "file-viewer") — the
- * merged VAULT main-viewport surface (decision D9): hub header (wordmark +
- * inventory subtitle, Layout Toggle patterns immediately right of the title,
- * workspace search, SORT, + NEW FILE), viewer toolbar (breadcrumb path at
- * the top left — every ancestor segment a back-navigation target — plus the
- * current title/description and Selection Tags filter pills), and the FILES
- * gallery: one gallery-style explorer area rendering both folders and
- * individual files as uniform tiles, folders first, every file kind
- * carrying its distinct icon.
+ * merged VAULT main-viewport surface (decision D9) with explorer semantics
+ * (decision D11): users land in the ROOT of their storage and the gallery
+ * renders ONLY the folders and files under the CURRENT path. Hub header
+ * (wordmark + inventory subtitle, Layout Toggle patterns immediately right
+ * of the title, workspace search, SORT, + NEW control with the create menu —
+ * NEW FOLDER / NEW FILE (DOSSIER), both created under the current path at
+ * any level), viewer toolbar (breadcrumb path at the top left — ALWAYS the
+ * full current path `NEXUS / VAULT / ALL FILES / …folders`, every ancestor
+ * segment a back-navigation target — plus the current title/description and
+ * the ownership filter pills ALL / OWNED BY ME / SHARED WITH ME), and the
+ * FILES gallery: one gallery-style explorer area rendering both folders and
+ * individual files as uniform tiles, folders first, every file kind carrying
+ * its distinct icon (kinds are distinguished by their icons, not filters).
+ *
+ * This module is the stateful composition: it owns the navigation path, the
+ * local view state (sort / layout / ownership filter), and the Lattice
+ * bindings, and renders the presentation modules HubHeader (the header bar
+ * with the create menu), ViewerToolbar (breadcrumb + title/description +
+ * filter pills), and FilesGallery (section row + the tile/rows explorer
+ * area) — see those files for their pieces.
  *
  * Lattice bindings (embedded, per the Micro-UI standards): gallery items
  * render IFileEntry records fetched through the generated FileEntryClient
  * over useLatticeTransport — entering a folder queries the entry's children
  * (scope = folder id) and pushes a path segment; the workspace search
- * issues ISearchable queries; + NEW FILE emits a creation intent
- * (IDossierDoc draft / IFileEntry); sort, layout, and filter are local view
+ * issues ISearchable queries; + NEW emits creation intents for files
+ * (IDossierDoc draft / IFileEntry) and folders (IFileEntry kind folder),
+ * both scoped to the current path; the ownership pills map entries through
+ * the `ownershipOf` configuration callback; sort and layout are local view
  * state. The breadcrumb path is published as the bounded-context shared
  * slot "vault.viewerPath"; opening a file emits the "file-viewer.open-file"
  * intent. No URLs, clients, or credentials in component code.
@@ -140,7 +165,7 @@ export function FileViewer({
   sortKeys = DEFAULT_SORT_KEYS,
   chip,
   meta,
-  shared,
+  ownershipOf,
   pageSize = DEFAULT_PAGE_SIZE,
   galleryMaxHeight = 360,
 }: FileViewerProps) {
@@ -154,7 +179,7 @@ export function FileViewer({
   const [query, setQuery] = useState<string>("");
   const [search, setSearch] = useState<{ readonly query: string } | null>(null);
   const [entries, setEntries] = useState<readonly FileEntrySummary[] | null>(null);
-  const [phase, setPhase] = useState<"busy" | "ok" | "error">("busy");
+  const [phase, setPhase] = useState<GalleryPhase>("busy");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [reloadToken, setReloadToken] = useState<number>(0);
 
@@ -174,8 +199,9 @@ export function FileViewer({
     });
   }, [path, publishViewerPath]);
 
-  // Entering a folder queries the entry's children; a search issues an
-  // ISearchable query. Cancelled renders keep only the latest response.
+  // Entering a folder queries the entry's children (the gallery renders only
+  // the current path); a search issues an ISearchable query. Cancelled
+  // renders keep only the latest response.
   useEffect(() => {
     let cancelled = false;
     const run = async (): Promise<void> => {
@@ -227,10 +253,7 @@ export function FileViewer({
     () =>
       tags ?? [
         { id: "all", label: strings.filterAll },
-        { id: "folders", label: strings.filterFolders },
-        { id: "dossiers", label: strings.filterDossiers },
-        { id: "boards", label: strings.filterBoards },
-        { id: "world", label: strings.filterWorld },
+        { id: "owned", label: strings.filterOwned },
         { id: "shared", label: strings.filterShared },
       ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- strings follow locale
@@ -246,29 +269,23 @@ export function FileViewer({
         ? strings.sortSize
         : activeSortKey.id.toUpperCase());
 
-  // Filter pills scope which entries the gallery renders; folders always
-  // render first; the active sort key orders within each group.
+  // Ownership pills scope which entries under the current path the gallery
+  // renders (D11): entries owned by the operator vs shared with them. Kinds
+  // are distinguished by their icons, not filters. Folders always render
+  // first; the active sort key orders within each group. Entries default to
+  // owned when no ownershipOf callback is configured.
   const visible = useMemo(() => {
     const matches = (entry: FileEntrySummary): boolean => {
       if (filter === "all") {
         return true;
       }
       if (filter === "shared") {
-        return shared?.(entry) === true;
+        return ownershipOf?.(entry) === "shared";
       }
-      if (filter === "folders") {
-        return entry.kind === "folder";
+      if (filter === "owned") {
+        return ownershipOf?.(entry) !== "shared";
       }
-      if (filter === "dossiers") {
-        return entry.kind === "dossier";
-      }
-      if (filter === "boards") {
-        return entry.kind === "board";
-      }
-      if (filter === "world") {
-        return entry.kind === "world";
-      }
-      return entry.kind === filter;
+      return true;
     };
     const filtered = (entries ?? []).filter(matches);
     const compare = (a: FileEntrySummary, b: FileEntrySummary): number => {
@@ -280,7 +297,7 @@ export function FileViewer({
     const folders = filtered.filter((entry) => entry.kind === "folder").sort(compare);
     const files = filtered.filter((entry) => entry.kind !== "folder").sort(compare);
     return [...folders, ...files];
-  }, [entries, filter, shared, activeSortKey]);
+  }, [entries, filter, ownershipOf, activeSortKey]);
 
   const currentFolder = path.length > 0 ? (path[path.length - 1] as FileEntrySummary) : null;
   const toolbarTitle = currentFolder !== null ? currentFolder.name : (rootTitle ?? strings.rootTitle);
@@ -322,6 +339,35 @@ export function FileViewer({
     setSearch(null);
   }, []);
 
+  // + NEW emits the creation intent for the current path (D11): NEW FOLDER
+  // targets an IFileEntry of kind folder; NEW FILE an IDossierDoc draft /
+  // IFileEntry.
+  const create = useCallback(
+    (target: CreateTarget): void => {
+      const scopeId = currentFolder !== null ? currentFolder.id : null;
+      if (target === "folder") {
+        emitPrismEvent("file-viewer.create-folder", {
+          scopeId,
+          ontologyInterfaces: ["IFileEntry"],
+        } satisfies CreateFolderIntent);
+        return;
+      }
+      emitPrismEvent("file-viewer.create-file", {
+        scopeId,
+        ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
+      } satisfies CreateFileIntent);
+    },
+    [currentFolder],
+  );
+
+  const cycleSort = (): void => {
+    setSortIndex((index) => index + 1);
+  };
+
+  const retry = (): void => {
+    setReloadToken((token) => token + 1);
+  };
+
   const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const trimmed = query.trim();
@@ -335,248 +381,55 @@ export function FileViewer({
     setQuery("");
   };
 
-  const galleryBody = (): React.JSX.Element => {
-    if (phase === "error") {
-      return (
-        <Alert variant="light" color="threat" title={strings.errorTitle} data-testid="file-viewer-error">
-          <Stack gap="sm">
-            <Text size="sm" data-testid="file-viewer-error-message">
-              {errorMessage}
-            </Text>
-            <Group>
-              <Button
-                variant="default"
-                data-testid="file-viewer-retry"
-                onClick={() => {
-                  setReloadToken((token) => token + 1);
-                }}
-              >
-                {strings.retry}
-              </Button>
-            </Group>
-          </Stack>
-        </Alert>
-      );
-    }
-    if (phase === "busy") {
-      return (
-        <div
-          style={
-            layout === "grid"
-              ? { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 12 }
-              : { display: "flex", flexDirection: "column", gap: 8 }
-          }
-          data-testid="file-viewer-loading"
-          aria-busy="true"
-        >
-          {[0, 1, 2, 3].map((row) => (
-            <Skeleton key={row} height={layout === "grid" ? 156 : 62} radius="md" />
-          ))}
-        </div>
-      );
-    }
-    if (visible.length === 0) {
-      return (
-        <Text ff={MONO} fz={9} style={{ color: MUTED, letterSpacing: "0.02em" }} data-testid="file-viewer-empty">
-          {search !== null ? strings.emptySearch : strings.emptyFiltered}
-        </Text>
-      );
-    }
-    return layout === "grid" ? (
-      <div
-        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 12 }}
-        role="list"
-      >
-        {visible.map((entry) => (
-          <FileTile
-            key={entry.id}
-            model={{ entry, meta: metaFor(entry), chip: chipFor(entry) }}
-            variant="tile"
-            strings={strings}
-            onOpen={openEntry}
-          />
-        ))}
-      </div>
-    ) : (
-      <Stack gap={8} role="list">
-        {visible.map((entry) => (
-          <FileTile
-            key={entry.id}
-            model={{ entry, meta: metaFor(entry), chip: chipFor(entry) }}
-            variant="row"
-            strings={strings}
-            onOpen={openEntry}
-          />
-        ))}
-      </Stack>
-    );
-  };
-
   return (
     <Stack gap={0} w="100%" miw={0} style={{ background: DEEP }} data-testid="file-viewer">
       {/* Hub header: wordmark + inventory subtitle, Layout Toggle patterns
-          immediately right of the title, then search / SORT / + NEW FILE. */}
-      <Group
-        gap={12}
-        wrap="nowrap"
-        align="center"
-        px={20}
-        h={72}
-        style={{ background: CARD_DARK, borderBottom: `1px solid ${LINE}` }}
-        data-testid="file-viewer-hub-header"
-      >
-        <Stack gap={3} miw={0} style={{ flex: "0 1 auto" }}>
-          <Text fz={15} fw={600} truncate="end" style={{ color: TEXT }} data-testid="file-viewer-title">
-            {title ?? strings.title}
-          </Text>
-          <Text
-            ff={MONO}
-            fz={9}
-            truncate="end"
-            style={{ color: MUTED, letterSpacing: "0.02em" }}
-            data-testid="file-viewer-subtitle"
-          >
-            {inventorySubtitle ?? strings.inventorySubtitle}
-          </Text>
-        </Stack>
-        <LayoutToggle
-          layout={layout}
-          onLayoutChange={setLayout}
-          gridLabel={strings.layoutGrid}
-          listLabel={strings.layoutList}
-        />
-        <Box style={{ flex: 1 }} />
-        <form onSubmit={submitSearch} data-testid="file-viewer-search-form">
-          <TextInput
-            w={260}
-            aria-label={strings.searchPlaceholder}
-            placeholder={strings.searchPlaceholder}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.currentTarget.value);
-            }}
-            leftSection={<span style={{ color: ACCENT, display: "inline-flex" }}><SearchIcon size={13} /></span>}
-            data-testid="file-viewer-search-input"
-            styles={{
-              input: {
-                height: 42,
-                borderRadius: 5,
-                background: DEEP,
-                borderColor: ACCENT,
-                fontFamily: MONO,
-                fontSize: 10,
-                color: TEXT,
-              },
-            }}
-          />
-        </form>
-        <UnstyledButton
-          type="button"
-          title={strings.sort}
-          data-testid="file-viewer-sort"
-          onClick={() => {
-            setSortIndex((index) => index + 1);
-          }}
-          style={{
-            height: 42,
-            padding: "0 14px",
-            borderRadius: 5,
-            background: CARD_BG,
-            border: `1px solid ${BORDER}`,
-            fontFamily: MONO,
-            fontSize: 9,
-            fontWeight: 500,
-            color: TEXT,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {`${strings.sort} · ${activeSortLabel} ↓`}
-        </UnstyledButton>
-        <UnstyledButton
-          type="button"
-          data-testid="file-viewer-new-file"
-          onClick={() => {
-            emitPrismEvent("file-viewer.create-file", {
-              scopeId: currentFolder !== null ? currentFolder.id : null,
-              ontologyInterfaces: ["IDossierDoc", "IFileEntry"],
-            } satisfies CreateFileIntent);
-          }}
-          style={{
-            height: 42,
-            padding: "0 16px",
-            borderRadius: 5,
-            background: ACCENT,
-            fontFamily: MONO,
-            fontSize: 9,
-            fontWeight: 500,
-            color: DEEP,
-            letterSpacing: "0.02em",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {strings.newFile}
-        </UnstyledButton>
-      </Group>
+          immediately right of the title, then search / SORT / + NEW (create
+          menu: NEW FOLDER / NEW FILE under the current path). */}
+      <HubHeader
+        strings={strings}
+        title={title}
+        inventorySubtitle={inventorySubtitle}
+        layout={layout}
+        onLayoutChange={setLayout}
+        query={query}
+        onQueryChange={setQuery}
+        onSubmitSearch={submitSearch}
+        activeSortLabel={activeSortLabel}
+        onSortCycle={cycleSort}
+        onCreate={create}
+      />
 
-      {/* Viewer toolbar: breadcrumb path (top left, back-navigation), current
-          title + description, Selection Tags filter pills; FILES gallery. */}
+      {/* Viewer toolbar: breadcrumb path (top left, ALWAYS the full current
+          path with back-navigation), current title + description, ownership
+          filter pills; FILES gallery. */}
       <Stack gap={0} px={24} pt={20} pb={24} miw={0}>
-        <ViewerBreadcrumb
+        <ViewerToolbar
+          strings={strings}
           segments={path.map((entry) => ({ id: entry.id, name: entry.name }))}
-          homeLabel={strings.crumbHome}
-          areaLabel={strings.crumbArea}
-          rootLabel={strings.crumbRoot}
+          title={toolbarTitle}
+          description={toolbarDescription}
+          tags={resolvedTags}
+          filter={filter}
+          onFilterChange={setFilter}
           onNavigate={navigate}
         />
-        <Text
-          fz={24}
-          fw={600}
-          mt={12}
-          style={{ color: TEXT, letterSpacing: "0.01em" }}
-          data-testid="file-viewer-path-title"
-        >
-          {toolbarTitle}
-        </Text>
-        <Text fz={11} mt={6} style={{ color: MUTED }} data-testid="file-viewer-path-description">
-          {toolbarDescription}
-        </Text>
-        <Box mt={16}>
-          <SelectionTags tags={resolvedTags} active={filter} onChange={setFilter} />
-        </Box>
-        <Group justify="space-between" align="center" wrap="nowrap" mt={24}>
-          <Text fz={11} fw={600} style={{ color: TEXT, letterSpacing: "0.02em" }} data-testid="file-viewer-section-label">
-            {sectionLabel}
-          </Text>
-          <Group gap={12} wrap="nowrap" align="center">
-            {search !== null ? (
-              <UnstyledButton
-                type="button"
-                ff={MONO}
-                fz={9}
-                fw={500}
-                c="accent"
-                style={{ letterSpacing: "0.02em" }}
-                data-testid="file-viewer-clear-search"
-                onClick={clearSearch}
-              >
-                {strings.clearSearch}
-              </UnstyledButton>
-            ) : null}
-            <Text ff={MONO} fz={9} style={{ color: MUTED, letterSpacing: "0.02em" }} data-testid="file-viewer-count">
-              {countLine}
-            </Text>
-          </Group>
-        </Group>
-        <Box
-          mt={10}
-          style={{ overflowY: "auto", maxHeight: galleryMaxHeight }}
-          data-testid="file-viewer-gallery"
-        >
-          {galleryBody()}
-        </Box>
+        <FilesGallery
+          strings={strings}
+          layout={layout}
+          phase={phase}
+          errorMessage={errorMessage}
+          searchActive={search !== null}
+          sectionLabel={sectionLabel}
+          countLine={countLine}
+          onClearSearch={clearSearch}
+          entries={visible}
+          metaFor={metaFor}
+          chipFor={chipFor}
+          onOpen={openEntry}
+          onRetry={retry}
+          maxHeight={galleryMaxHeight}
+        />
       </Stack>
     </Stack>
   );

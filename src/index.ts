@@ -4,10 +4,14 @@ export type {
   ViewerPath,
   OpenFileIntent,
   CreateFileIntent,
+  CreateFolderIntent,
+  EntryOwnership,
   ViewerSortKey,
 } from "./FileViewer.js";
 export { FileTile, defaultMetaFor } from "./FileTile.js";
 export type { FileTileModel, FileTileProps } from "./FileTile.js";
+export { HubHeader } from "./HubHeader.js";
+export type { HubHeaderProps, CreateTarget } from "./HubHeader.js";
 export { LayoutToggle } from "./LayoutToggle.js";
 export type { ViewerLayout, LayoutToggleProps } from "./LayoutToggle.js";
 export { SelectionTags } from "./SelectionTags.js";

@@ -17,8 +17,9 @@ export interface ViewerBreadcrumbProps {
   readonly rootLabel: string;
   /**
    * Back-navigation: -1 returns to the root; i >= 0 navigates to segments[i]
-   * (that folder becomes the current scope). Every ancestor segment is a
-   * target; the current segment renders plain.
+   * (that folder becomes the current scope). Every ancestor segment — NEXUS,
+   * VAULT, the root scope, and each entered folder before the current one —
+   * is a target; the current segment renders plain.
    */
   readonly onNavigate: (targetIndex: number) => void;
 }
@@ -29,13 +30,18 @@ const TEXT = "var(--mantine-color-text-filled)";
 const MUTED = "var(--mantine-color-muted-filled)";
 
 /**
- * Breadcrumb path of the viewer toolbar (v9 prototype .crumb): rendered at
- * the top left as `NEXUS / VAULT / …folder segments… / CURRENT`, extending
- * one segment per entered folder. Every ancestor segment — NEXUS, VAULT, and
- * each entered folder before the current one — is a back-navigation target;
- * the current segment is plain text. This is the viewer's navigation state,
- * published by the host File Viewer as the bounded-context shared slot
- * `vault.viewerPath` so peer components can interpret it (decision D8).
+ * Breadcrumb path of the viewer toolbar (v9.3 prototype .crumb): rendered at
+ * the top left and ALWAYS reflecting the full current path (decision D11) —
+ * `NEXUS / VAULT / <root scope> / …folder segments… / CURRENT`. The root
+ * scope segment (ALL FILES) is a persistent path segment like in a standard
+ * file explorer: at the root it is the plain current segment, and once a
+ * folder is entered it stays in the path as a clickable ancestor while each
+ * entered folder APPENDS one segment after it. Every ancestor segment —
+ * NEXUS, VAULT, the root scope, and each entered folder before the current
+ * one — is a back-navigation target; the current segment is plain text. This
+ * is the viewer's navigation state, published by the host File Viewer as the
+ * bounded-context shared slot `vault.viewerPath` so peer components can
+ * interpret it (decision D8).
  *
  * No palette is hardcoded: colors resolve to semantic theme tokens (accent /
  * text / muted) supplied by the host's MantineProvider.
@@ -76,7 +82,23 @@ export function ViewerBreadcrumb({
     </Text>
   );
 
-  const current = segments.length === 0 ? rootLabel : segments[segments.length - 1]?.name ?? "";
+  const atRoot = segments.length === 0;
+  // The root scope (ALL FILES) is a persistent path segment: plain-current at
+  // the root, a clickable ancestor once any folder has been entered (D11).
+  const rootSegment = atRoot ? (
+    <Text
+      ff={MONO}
+      fz={10}
+      fw={500}
+      c={TEXT}
+      style={{ letterSpacing: "0.04em" }}
+      data-testid="file-viewer-crumb-current"
+    >
+      {rootLabel}
+    </Text>
+  ) : (
+    segment("root", rootLabel, -1, "file-viewer-crumb-root")
+  );
 
   return (
     <Group gap={10} wrap="nowrap" align="center" data-testid="file-viewer-breadcrumb">
@@ -84,22 +106,28 @@ export function ViewerBreadcrumb({
       {separator("sep-home")}
       {segment("area", areaLabel, -1, "file-viewer-crumb-area")}
       {separator("sep-area")}
+      {rootSegment}
       {segments.slice(0, -1).map((folder, index) => (
         <Group key={folder.id} gap={10} wrap="nowrap" align="center">
-          {segment(folder.id, folder.name, index, `file-viewer-crumb-${index}`)}
           {separator(`sep-${folder.id}`)}
+          {segment(folder.id, folder.name, index, `file-viewer-crumb-${index}`)}
         </Group>
       ))}
-      <Text
-        ff={MONO}
-        fz={10}
-        fw={500}
-        c={TEXT}
-        style={{ letterSpacing: "0.04em" }}
-        data-testid="file-viewer-crumb-current"
-      >
-        {current}
-      </Text>
+      {atRoot ? null : (
+        <Group gap={10} wrap="nowrap" align="center">
+          {separator("sep-current")}
+          <Text
+            ff={MONO}
+            fz={10}
+            fw={500}
+            c={TEXT}
+            style={{ letterSpacing: "0.04em" }}
+            data-testid="file-viewer-crumb-current"
+          >
+            {segments[segments.length - 1]?.name ?? ""}
+          </Text>
+        </Group>
+      )}
     </Group>
   );
 }

@@ -9,7 +9,7 @@ export interface SelectionTag {
 }
 
 export interface SelectionTagsProps {
-  /** The offered tag set (configuration; defaults to the six builtin tags). */
+  /** The offered tag set (configuration; defaults to the three ownership tags). */
   readonly tags: readonly SelectionTag[];
   /** Currently active tag id. */
   readonly active: string;
@@ -25,11 +25,13 @@ const ACCENT = "var(--mantine-color-accent-filled)";
 const MONO = "var(--mantine-font-family-monospace)";
 
 /**
- * Selection Tags sub-component library (v9 prototype .filters / .fp): the
- * horizontal filter pill row under the viewer toolbar — ALL (active),
- * FOLDERS, DOSSIERS, BOARDS, WORLD VIEWS, SHARED. The active pill is
- * highlighted; selecting a tag scopes which file entries the FILES gallery
- * renders.
+ * Selection Tags sub-component library (v9.3 prototype .filters / .fp): the
+ * horizontal ownership filter pill row under the viewer toolbar — ALL
+ * (active), OWNED BY ME, SHARED WITH ME (decision D11, replacing the former
+ * kind filters; file kinds are distinguished by their icons, not filters).
+ * The active pill is highlighted; selecting a tag scopes which file entries
+ * under the CURRENT path the FILES gallery renders (entries owned by the
+ * current operator vs shared with them).
  *
  * Pure view state — no backend calls. Rendered inside the host axiom
  * component; never a Prism composition member (decision D5), and
